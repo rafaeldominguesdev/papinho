@@ -71,6 +71,14 @@ pub async fn remove_installed_skill(name: String) -> Result<()> {
         .map_err(|e| EngineError::Other(e.to_string()))?
 }
 
+/// A UI manda pro log de diagnóstico o que só ela vê (erro de invoke, evento
+/// de erro que apareceu na tela). Ver `engine/diag.rs`.
+#[tauri::command]
+pub async fn diag_log(tag: String, message: String) -> Result<()> {
+    super::diag::log(&tag, message);
+    Ok(())
+}
+
 /* ------------------------------------------------------------------ voz -- */
 
 /// Fala um trecho (frase a frase, pro modo conversa começar a responder

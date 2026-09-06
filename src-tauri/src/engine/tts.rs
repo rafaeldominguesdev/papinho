@@ -60,7 +60,19 @@ pub fn speak(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    let mut child = cmd.spawn().map_err(EngineError::Io)?;
+    super::diag::log(
+        "tts",
+        format!(
+            "falando id={id} voz={:?} rate={:?} chars={}",
+            voice.as_deref().unwrap_or("(padrão)"),
+            rate,
+            clean.chars().count()
+        ),
+    );
+    let mut child = cmd.spawn().map_err(|e| {
+        super::diag::log("tts", format!("ERRO ao rodar o `say`: {e}"));
+        EngineError::Io(e)
+    })?;
     if let Some(mut stdin) = child.stdin.take() {
         use std::io::Write;
         let _ = stdin.write_all(clean.as_bytes());

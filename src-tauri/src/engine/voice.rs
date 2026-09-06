@@ -84,7 +84,9 @@ mod imp {
     static VOICE_PUNCT: AtomicBool = AtomicBool::new(true);
 
     fn emit_error(app: &AppHandle, msg: impl Into<String>) {
-        let _ = app.emit("voice_error", serde_json::json!({ "message": msg.into() }));
+        let msg = msg.into();
+        crate::engine::diag::log("voz", format!("ERRO: {msg}"));
+        let _ = app.emit("voice_error", serde_json::json!({ "message": msg }));
     }
 
     /// Junta os trechos guardados + `tail` (o trecho atual), separados por
@@ -190,6 +192,14 @@ mod imp {
         VOICE_PUNCT.store(punctuation.unwrap_or(true), Ordering::SeqCst);
         CONVERSATION.store(conversation.unwrap_or(false), Ordering::SeqCst);
         MUTED.store(false, Ordering::SeqCst);
+        crate::engine::diag::log(
+            "voz",
+            format!(
+                "start lang={:?} conversa={}",
+                VOICE_LANG.lock().unwrap(),
+                CONVERSATION.load(Ordering::SeqCst)
+            ),
+        );
         let handle = app.clone();
         app.run_on_main_thread(move || request_speech_auth(handle))
             .map_err(|e| e.to_string())
@@ -264,6 +274,7 @@ mod imp {
         REBUILDS.store(0, Ordering::SeqCst);
 
         let status = unsafe { SFSpeechRecognizer::authorizationStatus() };
+        crate::engine::diag::log("voz", format!("auth de fala: {status:?}"));
         if status == SFSpeechRecognizerAuthorizationStatus::Authorized {
             request_mic_permission(app);
             return;
@@ -286,6 +297,7 @@ mod imp {
 
     fn request_mic_permission(app: AppHandle) {
         let current = unsafe { AVAudioApplication::sharedInstance().recordPermission() };
+        crate::engine::diag::log("voz", format!("permissão de microfone: {current:?}"));
         if current == AVAudioApplicationRecordPermission::Granted {
             finish_start(app);
             return;
@@ -308,7 +320,10 @@ mod imp {
 
     fn finish_start(app: AppHandle) {
         match build_engine(&app) {
-            Ok(handle) => VOICE.with(|slot| *slot.borrow_mut() = Some(handle)),
+            Ok(handle) => {
+                crate::engine::diag::log("voz", "engine no ar, captando");
+                VOICE.with(|slot| *slot.borrow_mut() = Some(handle))
+            }
             Err(e) => emit_error(&app, e),
         }
     }
@@ -330,6 +345,14 @@ mod imp {
                 .or_else(|| unsafe { Some(SFSpeechRecognizer::new()) })
                 .ok_or_else(|| "não foi possível criar o SFSpeechRecognizer".to_string())?;
 
+        crate::engine::diag::log(
+            "voz",
+            format!(
+                "recognizer locale={lang_id} disponível={} on-device={}",
+                unsafe { recognizer.isAvailable() },
+                unsafe { recognizer.supportsOnDeviceRecognition() },
+            ),
+        );
         if !unsafe { recognizer.isAvailable() } {
             return Err(
                 "reconhecimento de fala indisponível agora (sem rede para o primeiro uso, \
@@ -406,6 +429,7 @@ mod imp {
                     let full = combine(&text);
                     SEGMENTS.lock().unwrap().clear();
                     if !full.trim().is_empty() {
+                        crate::engine::diag::log("voz", format!("fala fechada: {full:?}"));
                         let _ =
                             app_res.emit("voice_utterance", serde_json::json!({ "text": full }));
                     }

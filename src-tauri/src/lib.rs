@@ -13,6 +13,7 @@ pub fn run() {
             ipc::list_installed_skills,
             ipc::install_skill,
             ipc::remove_installed_skill,
+            ipc::diag_log,
             ipc::tts_speak,
             ipc::tts_stop,
             ipc::tts_voices,

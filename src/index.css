@@ -657,65 +657,8 @@ a,
   }
 }
 
-/* ---- modo conversa (VoiceMode.tsx): o orbe é o "rosto" da conversa —
-   respira com o microfone quando ouve, gira quando pensa e pulsa quando
-   fala. Vermelho do app, sem neon: só um radial macio + um anel hairline. */
-.vo-orb {
-  position: absolute;
-  width: 200px;
-  height: 200px;
-  border-radius: 50%;
-  background: radial-gradient(
-    circle at 50% 42%,
-    color-mix(in srgb, var(--color-primary) 42%, transparent),
-    color-mix(in srgb, var(--color-primary) 12%, transparent) 58%,
-    transparent 72%
-  );
-  transition: transform 110ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: transform;
-}
-.vo-orb-speak {
-  animation: voSpeak 1.5s ease-in-out infinite;
-}
-@keyframes voSpeak {
-  0%,
-  100% {
-    transform: scale(1);
-    opacity: 0.85;
-  }
-  50% {
-    transform: scale(1.16);
-    opacity: 1;
-  }
-}
-.vo-orb-think {
-  animation: voThink 2.4s ease-in-out infinite;
-  opacity: 0.5;
-}
-@keyframes voThink {
-  0%,
-  100% {
-    transform: scale(0.9);
-  }
-  50% {
-    transform: scale(0.98);
-  }
-}
-.vo-ring {
-  position: absolute;
-  width: 200px;
-  height: 200px;
-  border-radius: 50%;
-  border: 1px solid var(--color-hairline-strong);
-}
-@media (prefers-reduced-motion: reduce) {
-  .vo-orb,
-  .vo-orb-speak,
-  .vo-orb-think {
-    animation: none;
-    transition: none;
-  }
-}
+/* o orbe do modo conversa virou canvas (VoiceOrb.tsx): esfera de wireframe
+   girando, anéis orbitais e núcleo — CSS não dava conta da profundidade. */
 
 /* ---- onboarding (item 33): card central, app borrado atras, animacoes
    suaves estilo Apple ---- */

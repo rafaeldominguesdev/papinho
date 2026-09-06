@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import * as settings from "./settings";
-import logoSheet from "./assets/logo-sheet.png";
+import { VoiceOrb } from "./VoiceOrb";
 
 /* ============================= MODO CONVERSA =============================
    Papo falado, no espírito do ChatGPT/Grok — mas montado com peça grátis e
@@ -79,6 +79,11 @@ function sentenceEnd(s: string, eager: boolean): number {
   }
   return -1;
 }
+
+/** manda pro log em arquivo (~/Library/Logs/Papinho.log) — num app
+ *  empacotado não há console, e o erro na tela some junto com a janela */
+const diag = (msg: string) =>
+  void invoke("diag_log", { tag: "ui", message: msg }).catch(() => {});
 
 /** o `say` lista "Eddy (Português (Brasil))" — na UI basta "Eddy" */
 const shortVoice = (n: string) => n.replace(/\s*\(.*\)\s*$/, "");
@@ -165,7 +170,10 @@ export function VoiceMode({
       text: next,
       voice: voiceName || null,
       rate: rate || null,
-    }).catch((e) => setErr(String(e)));
+    }).catch((e) => {
+      diag(`tts_speak falhou: ${String(e)}`);
+      setErr(String(e));
+    });
   }
 
   /** fatia o que chegou em frases e mantém a fala andando */
@@ -214,6 +222,7 @@ export function VoiceMode({
             streamDone.current = true;
             buf.current = "";
             queue.current = [];
+            diag(`chat falhou: ${message}`);
             setErr(message);
             if (!speaking.current) backToListening();
           },
@@ -263,7 +272,10 @@ export function VoiceMode({
       }),
     );
     add(
-      listen<{ message: string }>("voice_error", (e) => setErr(e.payload.message)),
+      listen<{ message: string }>("voice_error", (e) => {
+        diag(`voice_error: ${e.payload.message}`);
+        setErr(e.payload.message);
+      }),
     );
     add(
       listen<{ id: string }>("tts://done", (e) => {
@@ -273,6 +285,7 @@ export function VoiceMode({
       }),
     );
 
+    diag("modo conversa aberto");
     setPhase("starting");
     setErr(null);
     setSaid("");
@@ -284,12 +297,16 @@ export function VoiceMode({
       conversation: true,
     })
       .then(() => setPhase((p) => (p === "starting" ? "listening" : p)))
-      .catch((e) => setErr(String(e)));
+      .catch((e) => {
+        diag(`voice_start falhou: ${String(e)}`);
+        setErr(String(e));
+      });
 
     void invoke<Array<{ name: string; locale: string }>>("tts_voices", {
       locale: "pt_BR",
     })
       .then((vs) => {
+        diag(`vozes pt-BR encontradas: ${vs.length}`);
         setVoices(vs);
         // 1ª vez: sem escolha, o `say` usaria a voz padrão do sistema — que
         // costuma ser em inglês e lê português de um jeito sofrível.
@@ -334,10 +351,6 @@ export function VoiceMode({
 
   if (!open) return null;
 
-  const listening = phase === "listening";
-  // o orbe respira com a voz de quem fala: o microfone quando ouve, um
-  // vaivém próprio quando é o Papinho falando
-  const scale = listening ? 1 + Math.min(level, 1) * 0.34 : 1;
 
   return (
     <div className="absolute inset-0 z-50 flex flex-col bg-bg/92 backdrop-blur-xl">
@@ -359,27 +372,10 @@ export function VoiceMode({
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-8 px-8">
         <button
           onClick={() => (phase === "speaking" ? interrupt() : undefined)}
-          className="relative grid h-[240px] w-[240px] place-items-center"
+          className="relative grid place-items-center rounded-full outline-none"
           title={phase === "speaking" ? "interromper (espaço)" : PHASE_LABEL[phase]}
         >
-          <span
-            className={
-              "vo-orb " +
-              (phase === "speaking"
-                ? "vo-orb-speak"
-                : phase === "thinking"
-                  ? "vo-orb-think"
-                  : "")
-            }
-            style={{ transform: `scale(${scale.toFixed(3)})` }}
-            aria-hidden
-          />
-          <span className="vo-ring" aria-hidden />
-          <span
-            className="logo-wobble-lg relative h-16 w-16"
-            style={{ backgroundImage: `url(${logoSheet})` }}
-            aria-hidden
-          />
+          <VoiceOrb phase={phase} level={level} size={320} />
         </button>
 
         <div className="flex flex-col items-center gap-2 text-center">

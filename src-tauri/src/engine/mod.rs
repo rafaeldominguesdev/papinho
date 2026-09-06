@@ -2,6 +2,7 @@
 //! eventos (ver `ipc.rs`).
 
 pub mod chat;
+pub mod diag;
 pub mod error;
 pub mod ipc;
 pub mod skills;
