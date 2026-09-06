@@ -22,6 +22,10 @@ pub async fn chat_send(
     resume: bool,
     // `voice`: turno do modo conversa — injeta as regras de fala e pede resposta curta
     voice: Option<bool>,
+    // `provider`: qual IA responde ("claude" por padrão) — ver providers.rs
+    provider: Option<String>,
+    // `history`: o papo até aqui, pras CLIs sem retomada de sessão
+    history: Option<Vec<super::chat::HistoryMsg>>,
 ) -> Result<()> {
     super::chat::send(
         app,
@@ -35,8 +39,19 @@ pub async fn chat_send(
         images,
         resume,
         voice.unwrap_or(false),
+        provider.unwrap_or_else(|| "claude".into()),
+        history.unwrap_or_default(),
     )
     .await
+}
+
+/// As IAs que o Papinho conhece, com quais estão instaladas na máquina.
+/// A tela de Config vive disso.
+#[tauri::command]
+pub async fn list_providers() -> Result<Vec<super::providers::Provider>> {
+    tokio::task::spawn_blocking(super::providers::detect)
+        .await
+        .map_err(|e| EngineError::Other(e.to_string()))
 }
 
 /// Lê uma imagem do disco → `{ mediaType, data }` (base64) pro chat.

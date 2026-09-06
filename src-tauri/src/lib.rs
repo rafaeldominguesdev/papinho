@@ -10,6 +10,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ipc::chat_send,
             ipc::read_chat_image,
+            ipc::list_providers,
             ipc::list_installed_skills,
             ipc::install_skill,
             ipc::remove_installed_skill,

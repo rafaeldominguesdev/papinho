@@ -5,6 +5,7 @@ pub mod chat;
 pub mod diag;
 pub mod error;
 pub mod ipc;
+pub mod providers;
 mod neural;
 pub mod skills;
 pub mod tts;

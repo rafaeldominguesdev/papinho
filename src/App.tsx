@@ -8,9 +8,11 @@ import { VoiceMode, type VoiceHooks } from "./VoiceMode";
 import { Ico } from "./Ico";
 import { Scheduled } from "./Scheduled";
 import { Projects } from "./ProjectsView";
+import { Ias } from "./Ias";
+import * as providersStore from "./providers";
+import { ProviderGlyph, glyphFor } from "./marks";
 import * as tasksStore from "./tasks";
 import * as projectsStore from "./projects";
-import { MODELS } from "./models";
 import { SKILLS, SKILL_SOURCES, skillSource, teamLogo } from "./skills";
 import * as settings from "./settings";
 // mascote do Papinho — sprite de 24 frames (scripts/make_logo_sheet.py)
@@ -26,11 +28,20 @@ type ChatMsg = {
   error?: boolean;
   /** data: URLs das imagens anexadas (só nas mensagens do usuário) */
   images?: string[];
+  /** quem respondeu esta mensagem (a conversa pode trocar de IA no meio) */
+  provider?: string;
+  model?: string;
+  /** quando a resposta ficou pronta */
+  at?: number;
+  /** 1 curtiu, -1 não curtiu — fica só aqui, não vai pra lugar nenhum */
+  vote?: 1 | -1;
 };
 type Chat = {
   id: string; // = session_id do claude (UUID)
   title: string;
-  model: string; // api id (claude-sonnet-5 etc)
+  model: string; // o que vai no --model da CLI ("" = escolha da própria CLI)
+  /** id da IA que responde (claude, codex, gemini, cursor, grok) */
+  provider?: string;
   effort: string; // "" = padrão do modelo, senão low|medium|high|xhigh|max
   msgs: ChatMsg[];
   turns: number; // respostas já recebidas — >0 usa --resume
@@ -62,6 +73,7 @@ export const APP_VERSION = "1.0.0";
 
 const CHATS_KEY = "papinho.chats";
 const CHAT_MODEL_KEY = "papinho.chat.model";
+const CHAT_PROVIDER_KEY = "papinho.chat.provider";
 const CHAT_EFFORT_KEY = "papinho.chat.effort";
 
 function uuid(): string {
@@ -88,7 +100,7 @@ function loadChats(): Chat[] {
 }
 
 /** ícones do chat — um só componente, path por nome. 24×24, stroke. */
-type ChatSection = "inicio" | "projetos" | "skills" | "programado";
+type ChatSection = "inicio" | "projetos" | "skills" | "programado" | "ias";
 
 export default function App() {
   const [chats, setChats] = useState<Chat[]>(() => loadChats());
@@ -104,6 +116,17 @@ export default function App() {
       return settings.get("chatModel");
     }
   });
+  const [defaultProvider, setDefaultProvider] = useState<string>(() => {
+    try {
+      return localStorage.getItem(CHAT_PROVIDER_KEY) || "claude";
+    } catch {
+      return "claude";
+    }
+  });
+  const [ias, setIas] = useState<providersStore.Provider[]>(
+    providersStore.get(),
+  );
+  useEffect(() => providersStore.subscribe(setIas), []);
   const [defaultEffort, setDefaultEffort] = useState<string>(() => {
     try {
       return localStorage.getItem(CHAT_EFFORT_KEY) ?? settings.get("chatEffort");
@@ -113,6 +136,8 @@ export default function App() {
   });
   const [pending, setPending] = useState<PendingImg[]>([]);
   const [copied, setCopied] = useState<number | null>(null);
+  /** índice da mensagem sendo lida em voz alta (o `say` do modo conversa) */
+  const [speakingMsg, setSpeakingMsg] = useState<number | null>(null);
 
   // como a pessoa quer ser chamada — definido na Config (modo CODE). Fica em
   // sync com um listener do evento que o settings.setChatName dispara.
@@ -130,6 +155,8 @@ export default function App() {
   const [searchOn, setSearchOn] = useState(false);
   const [section, setSection] = useState<ChatSection>("inicio");
   const [sortDesc, setSortDesc] = useState(true);
+  /** busca do seletor de IA (mesmo espírito do menu de pane do DevTerm) */
+  const [modelQ, setModelQ] = useState("");
   const [menu, setMenu] = useState<
     null | "filter" | "attach" | "model" | "profile" | "help" | "voice"
   >(null);
@@ -176,11 +203,12 @@ export default function App() {
   useEffect(() => {
     try {
       localStorage.setItem(CHAT_MODEL_KEY, defaultModel);
+      localStorage.setItem(CHAT_PROVIDER_KEY, defaultProvider);
       localStorage.setItem(CHAT_EFFORT_KEY, defaultEffort);
     } catch {
       /* ignora */
     }
-  }, [defaultModel, defaultEffort]);
+  }, [defaultModel, defaultEffort, defaultProvider]);
 
   const active = chats.find((c) => c.id === activeId) ?? null;
 
@@ -224,6 +252,7 @@ export default function App() {
       patchLastAssistant(s.chatId, (m) => ({
         ...m,
         content: e.payload.text || m.content,
+        at: Date.now(),
       }));
       setChats((cs) =>
         cs.map((c) => (c.id === s.chatId ? { ...c, turns: c.turns + 1 } : c)),
@@ -231,6 +260,9 @@ export default function App() {
       streamRef.current = null;
       setBusy(false);
       if (s.voice) voiceHooks.current?.onDone();
+    }).then((u) => uns.push(u));
+    listen<{ id: string }>("tts://done", (e) => {
+      if (e.payload.id.startsWith("msg-")) setSpeakingMsg(null);
     }).then((u) => uns.push(u));
     listen<{ turnId: string; message: string }>("chat://error", (e) => {
       const s = streamRef.current;
@@ -252,6 +284,7 @@ export default function App() {
       id: uuid(),
       title: "novo chat",
       model: defaultModel,
+      provider: defaultProvider,
       effort: defaultEffort,
       msgs: [],
       turns: 0,
@@ -321,6 +354,54 @@ export default function App() {
     }
   }
 
+  /** lê a resposta em voz alta — mesma voz do modo conversa */
+  function speakMsg(text: string, idx: number) {
+    if (speakingMsg === idx) {
+      void invoke("tts_stop").catch(() => {});
+      setSpeakingMsg(null);
+      return;
+    }
+    setSpeakingMsg(idx);
+    void invoke("tts_speak", {
+      id: `msg-${idx}`,
+      text,
+      voice: settings.get("voiceName") || null,
+      rate: settings.get("voiceRate") || null,
+    }).catch(() => setSpeakingMsg(null));
+  }
+
+  /** 👍/👎 fica guardado só na conversa — não vai pra lugar nenhum */
+  function voteMsg(idx: number, v: 1 | -1) {
+    if (!active) return;
+    setChats((cs) =>
+      cs.map((c) =>
+        c.id === active.id
+          ? {
+              ...c,
+              msgs: c.msgs.map((m, i) =>
+                i === idx ? { ...m, vote: m.vote === v ? undefined : v } : m,
+              ),
+            }
+          : c,
+      ),
+    );
+  }
+
+  /** refaz a resposta: reenvia a última pergunta e descarta o que veio */
+  function redoFrom(idx: number) {
+    if (!active || busy) return;
+    const pergunta = [...active.msgs.slice(0, idx)]
+      .reverse()
+      .find((m) => m.role === "user");
+    if (!pergunta) return;
+    setChats((cs) =>
+      cs.map((c) =>
+        c.id === active.id ? { ...c, msgs: c.msgs.slice(0, idx - 1) } : c,
+      ),
+    );
+    window.setTimeout(() => void send(pergunta.content), 30);
+  }
+
   async function send(
     over?: string,
     opts?: { voice?: boolean; chat?: Chat; title?: string },
@@ -365,7 +446,12 @@ export default function App() {
                   content: text,
                   images: imgs.map((i) => i.dataUrl),
                 },
-                { role: "assistant", content: "" },
+                {
+                  role: "assistant",
+                  content: "",
+                  provider: chat!.provider ?? "claude",
+                  model,
+                },
               ],
             }
           : c,
@@ -380,6 +466,15 @@ export default function App() {
         sessionId: chatId,
         text,
         model,
+        provider: chat.provider ?? "claude",
+        // as CLIs sem sessão por id recebem o papo até aqui junto do prompt
+        history:
+          (chat.provider ?? "claude") === "claude"
+            ? []
+            : chat.msgs
+                .filter((m) => m.content.trim() && !m.error)
+                .slice(-20)
+                .map((m) => ({ role: m.role, content: m.content })),
         effort: effort || null,
         userName: name || null,
         systemExtra: systemExtraFor(chat) || null,
@@ -442,11 +537,15 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function setModel(v: string) {
-    setDefaultModel(v);
+  /** troca a IA e o modelo da conversa aberta (e o padrão das próximas) */
+  function setModel(providerId: string, arg: string) {
+    setDefaultModel(arg);
+    setDefaultProvider(providerId);
     if (active)
       setChats((cs) =>
-        cs.map((c) => (c.id === active.id ? { ...c, model: v } : c)),
+        cs.map((c) =>
+          c.id === active.id ? { ...c, model: arg, provider: providerId } : c,
+        ),
       );
   }
   function setEffort(v: string) {
@@ -458,9 +557,12 @@ export default function App() {
   }
 
   const curModel = active?.model ?? defaultModel;
+  const curProvider = active?.provider ?? defaultProvider;
   const curEffort = active?.effort ?? defaultEffort;
-  const curModelName =
-    MODELS.find((m) => m.api === curModel)?.nome ?? "Modelo";
+  const curModelName = providersStore.modelLabel(curProvider, curModel);
+  const curCompany = providersStore.companyOf(curProvider);
+  // o raciocínio estendido (--effort) é coisa do Claude
+  const effortOn = curProvider === "claude";
   const openProject = projectId
     ? projectsStore.load().find((p) => p.id === projectId) ?? null
     : null;
@@ -479,6 +581,7 @@ export default function App() {
   const NAV: { id: ChatSection; ico: string; label: string }[] = [
     { id: "projetos", ico: "folder", label: "Projetos" },
     { id: "skills", ico: "bulb", label: "Habilidades" },
+    { id: "ias", ico: "spark", label: "IAs" },
     { id: "programado", ico: "clock", label: "Programado" },
   ];
 
@@ -741,6 +844,8 @@ export default function App() {
           <ChatSkills />
         ) : section === "programado" ? (
           <Scheduled onRun={runTask} />
+        ) : section === "ias" ? (
+          <Ias />
         ) : section === "projetos" ? (
           <Projects
             chatCount={chats.reduce<Record<string, number>>((acc, c) => {
@@ -790,8 +895,18 @@ export default function App() {
                     key={i}
                     className="group/msg chat-serif text-[15px] leading-[1.75] text-ink"
                   >
-                    <div className="pixel mb-1.5 text-[9px] tracking-wider text-ink-dim">
-                      {curModelName}
+                    {/* quem respondeu: a marca da empresa + o modelo */}
+                    <div className="mb-1.5 flex items-center gap-1.5">
+                      <ProviderGlyph
+                        id={glyphFor(m.provider ?? curProvider)}
+                        size={13}
+                      />
+                      <span className="pixel text-[9px] tracking-wider text-ink-dim">
+                        {providersStore.modelLabel(
+                          m.provider ?? curProvider,
+                          m.model ?? curModel,
+                        )}
+                      </span>
                     </div>
                     {m.content ? (
                       m.error ? (
@@ -801,23 +916,16 @@ export default function App() {
                       ) : (
                         <>
                           <Markdown text={m.content} />
-                          <div className="mt-2 flex items-center gap-1 opacity-0 transition-opacity group-hover/msg:opacity-100">
-                            <button
-                              onClick={() => void copyMsg(m.content, i)}
-                              title="copiar"
-                              className="flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-ink-dim transition-colors hover:bg-white/[0.06] hover:text-ink"
-                            >
-                              {copied === i ? (
-                                <>
-                                  <IconCheck /> copiado
-                                </>
-                              ) : (
-                                <>
-                                  <IconCopy /> copiar
-                                </>
-                              )}
-                            </button>
-                          </div>
+                          <MsgActions
+                            msg={m}
+                            index={i}
+                            copied={copied === i}
+                            speaking={speakingMsg === i}
+                            onCopy={() => void copyMsg(m.content, i)}
+                            onSpeak={() => speakMsg(m.content, i)}
+                            onVote={(v) => voteMsg(i, v)}
+                            onRedo={() => redoFrom(i)}
+                          />
                         </>
                       )
                     ) : (
@@ -936,58 +1044,90 @@ export default function App() {
                     >
                       {curModelName}
                       <span className="text-ink-dim">
-                        {curEffort ? "· estendido" : "· padrão"}
+                        · {curCompany}
                       </span>
                       <Ico n="chevron" className="h-3.5 w-3.5 text-ink-dim" />
                     </button>
                     {menu === "model" && (
-                      <div className="absolute bottom-12 right-0 z-30 w-[340px] pop p-3">
-                        <p className="mb-2 px-1 text-[10px] uppercase tracking-[0.16em] text-ink-dim">
-                          Modelo
-                        </p>
-                        <div className="flex flex-col gap-1">
-                          {MODELS.map((m) => (
-                            <button
-                              key={m.id}
-                              onClick={() => {
-                                setModel(m.api);
-                                setMenu(null);
-                              }}
-                              className={
-                                "flex items-start gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors hover:bg-hairline " +
-                                (curModel === m.api ? "bg-hairline" : "")
-                              }
-                            >
-                              <span
-                                className="mt-1.5 h-2 w-2 shrink-0 rounded-full"
-                                style={{ background: m.cor }}
-                                aria-hidden
-                              />
-                              <span className="min-w-0 flex-1">
-                                <span className="flex items-center gap-2">
-                                  <span className="text-[13px] font-medium text-ink">
-                                    {m.nome}
-                                  </span>
-                                  <span className="text-[11px] tabular-nums text-ink-dim">
-                                    {m.precoM}
-                                  </span>
-                                  {curModel === m.api && (
-                                    <span className="ml-auto text-primary">
-                                      <IconCheck />
-                                    </span>
-                                  )}
-                                </span>
-                                <span className="mt-0.5 block text-[11px] leading-snug text-ink-dim">
-                                  {m.melhorPra}
-                                </span>
-                              </span>
-                            </button>
-                          ))}
+                      <div className="absolute bottom-12 right-0 z-30 flex max-h-[70vh] w-[19rem] flex-col overflow-hidden pop">
+                        <div className="shrink-0 border-b border-hairline p-2">
+                          <input
+                            autoFocus
+                            value={modelQ}
+                            onChange={(e) => setModelQ(e.currentTarget.value)}
+                            placeholder="buscar modelo ou empresa"
+                            className="h-8 w-full rounded-md border border-hairline-strong bg-bg px-3 text-[12px] text-ink outline-none placeholder:text-ink-dim"
+                          />
                         </div>
-                        <p className="mb-2 mt-4 px-1 text-[10px] uppercase tracking-[0.16em] text-ink-dim">
-                          Raciocínio
-                        </p>
-                        <div className="flex flex-wrap gap-1.5 px-1">
+                        <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+                          {ias
+                            .filter((p) => p.installed)
+                            .map((p) => ({
+                              ...p,
+                              models: p.models.filter((m) =>
+                                `${p.company} ${p.product} ${m.label}`
+                                  .toLowerCase()
+                                  .includes(modelQ.trim().toLowerCase()),
+                              ),
+                            }))
+                            .filter((p) => p.models.length)
+                            .map((p) => (
+                              <section
+                                key={p.id}
+                                className="border-b border-hairline py-1.5 first:pt-0 last:border-0 last:pb-0"
+                              >
+                                <h3 className="flex items-center gap-2.5 px-2.5 py-2">
+                                  <ProviderGlyph id={glyphFor(p.id)} size={24} />
+                                  <span className="pixel text-[12px] tracking-wider text-ink">
+                                    {p.company.toUpperCase()}
+                                  </span>
+                                </h3>
+                                {p.models.map((m) => (
+                                  <button
+                                    key={p.id + m.id}
+                                    onClick={() => {
+                                      setModel(p.id, m.arg);
+                                      setMenu(null);
+                                      setModelQ("");
+                                    }}
+                                    className="flex min-h-8 w-full items-center gap-2.5 rounded-md py-1.5 pl-[42px] pr-2.5 text-left text-[13px] text-ink transition-colors hover:bg-bg-soft"
+                                  >
+                                    <span
+                                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-ink-dim/60"
+                                      aria-hidden
+                                    />
+                                    <span className="min-w-0 flex-1 truncate">
+                                      {m.label}
+                                    </span>
+                                    {curProvider === p.id &&
+                                      curModel === m.arg && (
+                                        <span className="shrink-0 text-primary">
+                                          <IconCheck />
+                                        </span>
+                                      )}
+                                  </button>
+                                ))}
+                              </section>
+                            ))}
+                          {ias.filter((p) => p.installed).length === 0 && (
+                            <p className="px-3 py-4 text-[12px] leading-relaxed text-ink-dim">
+                              nenhuma CLI de IA encontrada — a aba IAs mostra
+                              como instalar.
+                            </p>
+                          )}
+                        </div>
+                        {/* raciocínio estendido é coisa do Claude — some
+                            quando a IA escolhida não tem isso */}
+                        <div
+                          className={
+                            "shrink-0 border-t border-hairline p-2 " +
+                            (effortOn ? "" : "hidden")
+                          }
+                        >
+                          <p className="mb-2 px-1 text-[10px] uppercase tracking-[0.16em] text-ink-dim">
+                            Raciocínio
+                          </p>
+                          <div className="flex flex-wrap gap-1.5 px-1">
                           {EFFORTS.map((e) => (
                             <button
                               key={e}
@@ -1005,6 +1145,7 @@ export default function App() {
                               {EFFORT_LABEL[e].replace("pensar: ", "") || "padrão"}
                             </button>
                           ))}
+                          </div>
                         </div>
                       </div>
                     )}
@@ -1203,6 +1344,157 @@ function ChatSkills() {
         </div>
       )}
     </div>
+  );
+}
+
+/** A barra que aparece embaixo da resposta pronta: copiar, ouvir, 👍/👎,
+ *  refazer e a data. Fica sempre visível (não só no hover) — é ela que diz
+ *  que a resposta terminou. */
+function MsgActions({
+  msg,
+  index,
+  copied,
+  speaking,
+  onCopy,
+  onSpeak,
+  onVote,
+  onRedo,
+}: {
+  msg: ChatMsg;
+  index: number;
+  copied: boolean;
+  speaking: boolean;
+  onCopy: () => void;
+  onSpeak: () => void;
+  onVote: (v: 1 | -1) => void;
+  onRedo: () => void;
+}) {
+  const btn =
+    "flex h-7 w-7 items-center justify-center rounded-md text-ink-dim transition-colors hover:bg-white/[0.06] hover:text-ink";
+  return (
+    <div className="mt-2.5 flex items-center gap-0.5 font-mono">
+      <button onClick={onCopy} title="copiar" aria-label="copiar" className={btn}>
+        {copied ? <IconCheck /> : <IconCopy />}
+      </button>
+      <button
+        onClick={onSpeak}
+        title={speaking ? "parar de ler" : "ouvir"}
+        aria-label="ouvir"
+        className={btn + (speaking ? " text-primary" : "")}
+      >
+        <IconSpeaker on={speaking} />
+      </button>
+      <button
+        onClick={() => onVote(1)}
+        title="boa resposta"
+        aria-label="boa resposta"
+        className={btn + (msg.vote === 1 ? " text-primary" : "")}
+      >
+        <IconThumb />
+      </button>
+      <button
+        onClick={() => onVote(-1)}
+        title="resposta ruim"
+        aria-label="resposta ruim"
+        className={btn + (msg.vote === -1 ? " text-primary" : "")}
+      >
+        <IconThumb down />
+      </button>
+      <button
+        onClick={onRedo}
+        title="refazer a resposta"
+        aria-label="refazer"
+        className={btn}
+      >
+        <IconRedo />
+      </button>
+      <span className="ml-1.5 text-[11px] text-ink-dim" title={String(index)}>
+        {msgDate(msg.at)}
+      </span>
+    </div>
+  );
+}
+
+const MESES = [
+  "jan.", "fev.", "mar.", "abr.", "mai.", "jun.",
+  "jul.", "ago.", "set.", "out.", "nov.", "dez.",
+];
+
+/** "hoje às 14:32" no mesmo dia; "26 de ago." nos outros */
+function msgDate(at?: number): string {
+  if (!at) return "";
+  const d = new Date(at);
+  const hoje = new Date();
+  const mesmoDia =
+    d.getDate() === hoje.getDate() &&
+    d.getMonth() === hoje.getMonth() &&
+    d.getFullYear() === hoje.getFullYear();
+  if (mesmoDia) {
+    return `hoje às ${String(d.getHours()).padStart(2, "0")}:${String(
+      d.getMinutes(),
+    ).padStart(2, "0")}`;
+  }
+  return `${d.getDate()} de ${MESES[d.getMonth()]}`;
+}
+
+function IconSpeaker({ on }: { on?: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-[15px] w-[15px]"
+      aria-hidden
+    >
+      <path d="M4 9v6h3.5L12 19V5L7.5 9H4Z" />
+      {on ? (
+        <>
+          <path d="M15.5 9.5a3.5 3.5 0 0 1 0 5" />
+          <path d="M18 7a7 7 0 0 1 0 10" />
+        </>
+      ) : (
+        <path d="M15.5 9.5a3.5 3.5 0 0 1 0 5" />
+      )}
+    </svg>
+  );
+}
+
+function IconThumb({ down }: { down?: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-[15px] w-[15px]"
+      aria-hidden
+      style={down ? { transform: "rotate(180deg)" } : undefined}
+    >
+      <path d="M7 10v9H4v-9h3ZM7 10l4-6c1.3 0 2 .8 2 2v3h4.6c1.1 0 1.9 1 1.6 2l-1.4 5.6c-.2.8-.9 1.4-1.7 1.4H7" />
+    </svg>
+  );
+}
+
+function IconRedo() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-[15px] w-[15px]"
+      aria-hidden
+    >
+      <path d="M20 5v5h-5" />
+      <path d="M19.5 10a8 8 0 1 0-.7 6" />
+    </svg>
   );
 }
 
