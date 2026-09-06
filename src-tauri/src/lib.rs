@@ -1,6 +1,6 @@
 pub mod engine;
 
-use engine::ipc;
+use engine::{ipc, voice};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -13,6 +13,11 @@ pub fn run() {
             ipc::list_installed_skills,
             ipc::install_skill,
             ipc::remove_installed_skill,
+            ipc::tts_speak,
+            ipc::tts_stop,
+            ipc::tts_voices,
+            voice::voice_start,
+            voice::voice_stop,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

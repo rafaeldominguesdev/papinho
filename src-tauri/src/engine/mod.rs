@@ -5,6 +5,8 @@ pub mod chat;
 pub mod error;
 pub mod ipc;
 pub mod skills;
+pub mod tts;
+pub mod voice;
 
 pub use error::{EngineError, Result};
 

@@ -67,3 +67,33 @@ pub async fn remove_installed_skill(name: String) -> Result<()> {
         .await
         .map_err(|e| EngineError::Other(e.to_string()))?
 }
+
+/* ------------------------------------------------------------------ voz -- */
+
+/// Fala um trecho (frase a frase, pro modo conversa começar a responder
+/// antes do modelo terminar). Corta o que estiver falando.
+#[tauri::command]
+pub async fn tts_speak(
+    app: AppHandle,
+    id: String,
+    text: String,
+    voice: Option<String>,
+    rate: Option<u32>,
+) -> Result<()> {
+    super::tts::speak(app, id, text, voice, rate)
+}
+
+/// Corta a fala em curso (quando a pessoa interrompe).
+#[tauri::command]
+pub async fn tts_stop() -> Result<()> {
+    super::tts::stop();
+    Ok(())
+}
+
+/// Vozes do sistema pro idioma (ex.: "pt_BR").
+#[tauri::command]
+pub async fn tts_voices(locale: String) -> Result<Vec<serde_json::Value>> {
+    tokio::task::spawn_blocking(move || super::tts::voices(&locale))
+        .await
+        .map_err(|e| EngineError::Other(e.to_string()))
+}
