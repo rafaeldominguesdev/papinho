@@ -8,6 +8,8 @@
 //! - gemini: `-p … -o stream-json` ({type:message, role:assistant, delta})
 //! - cursor: `-p … --output-format stream-json --stream-partial-output`
 //! - grok:   `-p …` (texto puro, sem JSON)
+//! - antigravity: `-p … --output-format stream-json` ({event:step_update,
+//!   step_update:{step_type:agent_response, text_delta}})
 //!
 //! Só o `claude` tem retomada de sessão por UUID aqui. Nos outros o histórico
 //! da conversa vai embutido no prompt — mais simples e previsível do que
@@ -314,7 +316,11 @@ fn build_prompt(sys: &str, history: &[HistoryMsg], text: &str) -> String {
     if !history.is_empty() {
         p.push_str("--- conversa até aqui ---\n");
         for m in history {
-            let quem = if m.role == "assistant" { "Você" } else { "Usuário" };
+            let quem = if m.role == "assistant" {
+                "Você"
+            } else {
+                "Usuário"
+            };
             let corpo = m.content.trim();
             if corpo.is_empty() {
                 continue;
@@ -382,6 +388,20 @@ async fn send_cli(
             }
             cmd.arg("-p").arg(&prompt);
         }
+        "antigravity" => {
+            // `--disable-slash-commands` porque o prompt é texto de gente: se
+            // começar com "/" ele viraria comando da CLI em vez de pergunta.
+            // As ferramentas dele (escrever arquivo, rodar comando) são
+            // negadas sozinhas no headless — sem terminal não dá pra aprovar —,
+            // o que combina com o Papinho ser só conversa.
+            cmd.arg("--output-format")
+                .arg("stream-json")
+                .arg("--disable-slash-commands");
+            if !model.is_empty() {
+                cmd.arg("--model").arg(&model);
+            }
+            cmd.arg("-p").arg(&prompt);
+        }
         other => {
             return Err(EngineError::Other(format!("IA sem suporte ainda: {other}")));
         }
@@ -433,6 +453,29 @@ async fn send_cli(
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue; // ruído da CLI (aviso, barra de progresso…)
         };
+        // o Antigravity chama a chave de "event" em vez de "type", então ele
+        // fica fora do `match` das outras
+        if prov.id == "antigravity" {
+            match v["event"].as_str().unwrap_or("") {
+                "step_update" => {
+                    let s = &v["step_update"];
+                    if s["step_type"] == "agent_response" {
+                        if let Some(t) = s["text_delta"].as_str() {
+                            emit(&app, &mut acc, t);
+                        }
+                    }
+                }
+                // o `result` repete a resposta inteira: só serve de rede quando
+                // nenhum pedaço veio streamando
+                "result" if acc.is_empty() => {
+                    if let Some(t) = v["result"]["response"].as_str() {
+                        emit(&app, &mut acc, t);
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
         match (prov.id.as_str(), v["type"].as_str().unwrap_or("")) {
             // {"type":"item.completed","item":{"type":"agent_message","text":…}}
             ("codex", "item.completed") => {

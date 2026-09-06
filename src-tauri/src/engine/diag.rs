@@ -25,7 +25,13 @@ fn stamp() -> String {
         .unwrap_or(0);
     let day = secs % 86_400;
     let mut s = String::new();
-    let _ = write!(s, "{:02}:{:02}:{:02}", day / 3600, (day % 3600) / 60, day % 60);
+    let _ = write!(
+        s,
+        "{:02}:{:02}:{:02}",
+        day / 3600,
+        (day % 3600) / 60,
+        day % 60
+    );
     s
 }
 

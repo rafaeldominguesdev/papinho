@@ -194,6 +194,7 @@ export function glyphFor(providerId: string): string {
     case "codex":
       return "openai";
     case "gemini":
+    case "antigravity":
       return "google";
     case "cursor":
       return "cursor";

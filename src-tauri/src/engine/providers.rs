@@ -2,8 +2,8 @@
 //!
 //! Cada uma é uma CLI que já vive na máquina de quem usa — o Papinho não
 //! guarda chave de API nenhuma: ele reaproveita o login que a pessoa já fez
-//! (`claude`, `codex`, `gemini`, `cursor-agent`, `grok`). Conectar uma IA
-//! nova é instalar a CLI dela e logar; a tela de Config só mostra o estado.
+//! (`claude`, `codex`, `gemini`, `cursor-agent`, `grok`, `agy`). Conectar uma
+//! IA nova é instalar a CLI dela e logar; a tela de IAs só mostra o estado.
 //!
 //! Todas têm um modo "uma pergunta, uma resposta" e (menos a do Grok) sabem
 //! cuspir JSON em streaming — é disso que o chat vive.
@@ -94,6 +94,28 @@ pub fn catalog() -> Vec<Provider> {
             // a CLI escolhe o modelo sozinha ("auto"); forçar um id que a
             // conta não tem só dá erro, então não inventamos lista.
             models: vec![m("auto", "Automático", "")],
+            installed: false,
+            path: String::new(),
+        },
+        Provider {
+            id: "antigravity".into(),
+            company: "Google".into(),
+            product: "Antigravity CLI".into(),
+            bin: "agy".into(),
+            install: "curl -fsSL https://antigravity.google/cli/install.sh | bash".into(),
+            login: "agy".into(),
+            free: true,
+            // slugs de `agy models`: o nível de raciocínio já vem no nome do
+            // modelo, então cada nível é uma escolha na lista.
+            models: vec![
+                m("flash", "Flash 3.8", "gemini-3.8-flash-medium"),
+                m("flash-alto", "Flash 3.8 alto", "gemini-3.8-flash-high"),
+                m("flash-baixo", "Flash 3.8 baixo", "gemini-3.8-flash-low"),
+                m("pro", "Pro 3.1", "gemini-3.1-pro-high"),
+                m("sonnet46", "Sonnet 4.6", "claude-sonnet-4-6"),
+                m("opus46", "Opus 4.6", "claude-opus-4-6-thinking"),
+                m("oss", "GPT-OSS 120B", "gpt-oss-120b-medium"),
+            ],
             installed: false,
             path: String::new(),
         },

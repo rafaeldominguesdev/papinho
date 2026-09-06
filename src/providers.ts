@@ -61,6 +61,7 @@ export const BRAND: Record<string, string> = {
   claude: "#d97757",
   codex: "#10b981",
   gemini: "#4285f4",
+  antigravity: "#b98cff",
   cursor: "#d8d8d8",
   grok: "#38bdf8",
 };
