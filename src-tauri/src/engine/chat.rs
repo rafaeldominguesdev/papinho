@@ -1,0 +1,272 @@
+//! Chat "puro" (aba CHAT): roda `claude --print` em modo streaming e devolve
+//! a resposta pela stream de eventos Tauri. Reaproveita a autenticação de
+//! quem já está logado no `claude` (assinatura/OAuth) — não pede chave nova.
+//!
+//! Multi-turno: cada conversa tem um `session_id` (UUID gerado na UI). A
+//! primeira mensagem usa `--session-id <uuid>`; as seguintes usam
+//! `--resume <uuid>` (o `claude` mantém o histórico daquela sessão).
+//!
+//! `--model` e `--effort` (low/medium/high/xhigh/max) vão em TODA mensagem —
+//! dá pra trocar no meio da conversa.
+//!
+//! Imagens: quando vêm, o prompt entra por `--input-format stream-json` no
+//! stdin (uma linha JSON com blocos `image` + `text`), como a API espera.
+//!
+//! Eventos (todos com `turnId` = id da mensagem em curso):
+//! - `chat://delta`   `{ turnId, text }`
+//! - `chat://done`    `{ turnId, text }`
+//! - `chat://error`   `{ turnId, message }`
+
+use std::process::Stdio;
+use std::sync::{Arc, Mutex};
+
+use serde::Deserialize;
+use serde_json::Value;
+use tauri::{AppHandle, Emitter};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
+
+use crate::engine::error::EngineError;
+use crate::engine::Result;
+
+const SYSTEM: &str = "Você é um assistente de chat de propósito geral dentro do DevTerm. \
+Responda em português do Brasil, de forma direta e útil. Você é só conversa: não tem \
+ferramentas, terminal nem acesso a arquivos.";
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatImage {
+    /// ex: "image/png", "image/jpeg"
+    pub media_type: String,
+    /// conteúdo do arquivo em base64
+    pub data: String,
+}
+
+/// Manda uma mensagem e streama a resposta.
+#[allow(clippy::too_many_arguments)]
+pub async fn send(
+    app: AppHandle,
+    turn_id: String,
+    session_id: String,
+    text: String,
+    model: String,
+    effort: Option<String>,
+    user_name: Option<String>,
+    system_extra: Option<String>,
+    images: Vec<ChatImage>,
+    resume: bool,
+) -> Result<()> {
+    let mut cmd = Command::new("claude");
+    cmd.current_dir(std::env::temp_dir())
+        .arg("--print")
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--verbose")
+        .arg("--include-partial-messages")
+        .arg("--model")
+        .arg(&model);
+
+    if let Some(e) = effort.as_deref().filter(|s| !s.is_empty()) {
+        cmd.arg("--effort").arg(e);
+    }
+
+    if resume {
+        cmd.arg("--resume").arg(&session_id);
+    } else {
+        cmd.arg("--session-id").arg(&session_id);
+        let mut sys = SYSTEM.to_string();
+        if let Some(n) = user_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let n: String = n.chars().take(40).collect();
+            sys.push_str(&format!(
+                " O usuário quer ser chamado de \"{n}\" — use esse nome ao se dirigir a ele."
+            ));
+        }
+        if let Some(x) = system_extra
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            sys.push(' ');
+            sys.push_str(x);
+        }
+        cmd.arg("--append-system-prompt").arg(&sys);
+    }
+
+    let has_images = !images.is_empty();
+    if has_images {
+        cmd.arg("--input-format").arg("stream-json");
+        cmd.stdin(Stdio::piped());
+    } else {
+        cmd.arg(&text);
+        cmd.stdin(Stdio::null());
+    }
+
+    cmd.env("PATH", crate::engine::shell_path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // dogfooding: o DevTerm pode ter sido lançado de dentro de um Claude Code.
+    for (k, _) in std::env::vars() {
+        let ku = k.to_ascii_uppercase();
+        if ku == "CLAUDECODE" || ku.starts_with("CLAUDE_CODE") || ku.starts_with("CLAUDE_CONFIG") {
+            cmd.env_remove(&k);
+        }
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| EngineError::Provider(format!("claude: {e}")))?;
+
+    if has_images {
+        let mut content: Vec<Value> = images
+            .iter()
+            .map(|img| {
+                serde_json::json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img.media_type,
+                        "data": img.data,
+                    }
+                })
+            })
+            .collect();
+        content.push(serde_json::json!({ "type": "text", "text": text }));
+        let line = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": content },
+        })
+        .to_string();
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(line.as_bytes()).await;
+            let _ = stdin.write_all(b"\n").await;
+            // fecha o stdin pro claude saber que a entrada acabou
+            drop(stdin);
+        }
+    }
+
+    let stdout = child.stdout.take().expect("stdout piped");
+    let mut stderr = child.stderr.take().expect("stderr piped");
+
+    let err_buf = Arc::new(Mutex::new(String::new()));
+    let err_buf2 = err_buf.clone();
+    tokio::spawn(async move {
+        let mut s = String::new();
+        let _ = stderr.read_to_string(&mut s).await;
+        *err_buf2.lock().unwrap() = s;
+    });
+
+    let mut lines = BufReader::new(stdout).lines();
+    let mut acc = String::new();
+
+    while let Ok(Some(line)) = lines.next_line().await {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        match v["type"].as_str().unwrap_or("") {
+            "stream_event" => {
+                let ev = &v["event"];
+                if ev["type"] == "content_block_delta" {
+                    if let Some(t) = ev["delta"]["text"].as_str() {
+                        acc.push_str(t);
+                        let _ = app.emit(
+                            "chat://delta",
+                            serde_json::json!({ "turnId": turn_id, "text": t }),
+                        );
+                    }
+                }
+            }
+            "assistant" => {
+                if acc.is_empty() {
+                    if let Some(arr) = v["message"]["content"].as_array() {
+                        for b in arr {
+                            if let Some(t) = b["text"].as_str() {
+                                acc.push_str(t);
+                                let _ = app.emit(
+                                    "chat://delta",
+                                    serde_json::json!({ "turnId": turn_id, "text": t }),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            "result" if acc.is_empty() => {
+                if let Some(r) = v["result"].as_str() {
+                    acc = r.to_string();
+                    let _ = app.emit(
+                        "chat://delta",
+                        serde_json::json!({ "turnId": turn_id, "text": r }),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| EngineError::Provider(format!("claude wait: {e}")))?;
+
+    if acc.trim().is_empty() {
+        let err = err_buf.lock().unwrap().clone();
+        let snippet: String = err.chars().take(500).collect();
+        let msg = if status.success() {
+            "resposta vazia do claude".to_string()
+        } else if snippet.trim().is_empty() {
+            format!("claude saiu com {status}")
+        } else {
+            snippet
+        };
+        let _ = app.emit(
+            "chat://error",
+            serde_json::json!({ "turnId": turn_id, "message": msg }),
+        );
+        return Ok(());
+    }
+
+    let _ = app.emit(
+        "chat://done",
+        serde_json::json!({ "turnId": turn_id, "text": acc }),
+    );
+    Ok(())
+}
+
+/// Lê um arquivo de imagem do disco e devolve `{ media_type, data(base64) }`
+/// pro front mandar junto de uma mensagem do chat.
+pub fn read_image_b64(path: &str) -> Result<ChatImage> {
+    use base64::Engine as _;
+
+    let bytes = std::fs::read(path).map_err(EngineError::Io)?;
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err(EngineError::Other("imagem acima de 8 MB".into()));
+    }
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let media_type = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        other => {
+            return Err(EngineError::Other(format!(
+                "formato não suportado: {other}"
+            )))
+        }
+    }
+    .to_string();
+    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(ChatImage { media_type, data })
+}
