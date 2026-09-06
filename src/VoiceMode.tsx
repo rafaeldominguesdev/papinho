@@ -76,9 +76,6 @@ function sentenceEnd(s: string): number {
 const diag = (msg: string) =>
   void invoke("diag_log", { tag: "ui", message: msg }).catch(() => {});
 
-/** o `say` lista "Eddy (Português (Brasil))" — na UI basta "Eddy" */
-const shortVoice = (n: string) => n.replace(/\s*\(.*\)\s*$/, "");
-
 export function VoiceMode({
   open,
   onClose,
@@ -99,10 +96,6 @@ export function VoiceMode({
   const [partial, setPartial] = useState("");
   const [said, setSaid] = useState("");
   const [err, setErr] = useState<string | null>(null);
-  const [voices, setVoices] = useState<Array<{ name: string; locale: string }>>(
-    [],
-  );
-  const [menu, setMenu] = useState(false);
 
   const voiceName = settings.useSetting("voiceName");
   const rate = settings.useSetting("voiceRate");
@@ -192,29 +185,6 @@ export function VoiceMode({
 
   fns.current = { speakNext, interrupt };
 
-  async function previewVoice(name: string) {
-    accepting.current = false;
-    streamDone.current = true;
-    queue.current = [];
-    buf.current = "";
-    settings.set("voiceName", name);
-    const id = `preview-${++seq.current}`;
-    curId.current = id;
-    speaking.current = true;
-    setErr(null);
-    setPhase("speaking");
-    mute(true);
-    try {
-      await invoke("tts_stop");
-      if (curId.current !== id) return;
-      await invoke("tts_speak", { id, voice: name, rate,
-        text: "Oi, eu sou o Papinho. Pode falar comigo à vontade. Como foi o seu dia?" });
-    } catch (error) {
-      if (curId.current !== id) return;
-      setErr(String(error));
-      backToListening();
-    }
-  }
 
   // ---- o App empurra o stream do chat pra cá (atualiza a cada render pra as
   //      closures verem o estado novo)
@@ -335,7 +305,6 @@ export function VoiceMode({
       .then((vs) => {
         if (dead) return;
         diag(`vozes pt-BR encontradas: ${vs.length}`);
-        setVoices(vs);
         if (vs.length && (!settings.get("voiceNeuralConfigured") || !vs.some((v) => v.name === settings.get("voiceName")))) {
           settings.set("voiceName", "Alex · IA local");
           settings.set("voiceRate", 175);
@@ -423,87 +392,8 @@ export function VoiceMode({
         </div>
       </div>
 
-      <div className="flex items-center justify-center gap-2 px-6 pb-8">
-        <button
-          onClick={() => settings.set("voiceEarphones", !earphones)}
-          aria-pressed={earphones}
-          className={
-            "pill px-3 py-1.5 text-[11px] " +
-            (earphones ? "border-primary/50 text-primary" : "text-ink-dim")
-          }
-          title={
-            earphones
-              ? "microfone aberto o tempo todo — dá pra interromper falando"
-              : "de fones, o microfone fica aberto enquanto ele fala e você pode cortar falando por cima"
-          }
-        >
-          fones {earphones ? "on" : "off"}
-        </button>
-
-        <div className="relative">
-          <button
-            onClick={() => setMenu((m) => !m)}
-            aria-expanded={menu}
-            className="pill px-3 py-1.5 text-[11px] text-ink-dim"
-            title="voz e velocidade"
-          >
-            voz: {shortVoice(voiceName) || "padrão do sistema"}
-          </button>
-          {menu && (
-            <div className="absolute bottom-10 left-1/2 z-30 w-[300px] -translate-x-1/2 pop p-3">
-              <p className="mb-2 px-1 text-[10px] uppercase tracking-[0.16em] text-ink-dim">
-                vozes em português
-              </p>
-              <div className="flex max-h-52 flex-col gap-0.5 overflow-y-auto">
-                {voices.length === 0 && (
-                  <p className="px-1 py-2 text-[11px] leading-relaxed text-ink-dim">
-                    nenhuma voz pt-BR instalada. Ajustes do Sistema ›
-                    Acessibilidade › Conteúdo falado › Voz do sistema ›
-                    Gerenciar vozes → Português (Brasil).
-                  </p>
-                )}
-                {voices.map((v) => (
-                  <button
-                    key={v.name}
-                    onClick={() => void previewVoice(v.name)}
-                    aria-pressed={voiceName === v.name}
-                    className={
-                      "rounded px-2 py-1.5 text-left text-[12px] hover:bg-white/[0.06] " +
-                      (voiceName === v.name ? "text-primary" : "text-ink")
-                    }
-                  >
-                    {shortVoice(v.name)}
-                  </button>
-                ))}
-              </div>
-              <p className="mb-1 mt-3 px-1 text-[10px] uppercase tracking-[0.16em] text-ink-dim">
-                velocidade · {voiceName.includes("IA local") ? `${(rate / 175).toFixed(2)}×` : `${rate} ppm`}
-              </p>
-              <input
-                aria-label="Velocidade da voz"
-                type="range"
-                min={120}
-                max={300}
-                step={5}
-                value={rate}
-                onChange={(e) =>
-                  settings.set("voiceRate", Number(e.currentTarget.value))
-                }
-                className="w-full accent-[var(--color-primary)]"
-              />
-            </div>
-          )}
-        </div>
-
-        <button
-          onClick={interrupt}
-          disabled={phase !== "speaking"}
-          className="pill px-3 py-1.5 text-[11px] text-ink-dim disabled:opacity-30"
-          title="parar de falar (espaço)"
-        >
-          interromper
-        </button>
-      </div>
+      {/* A tela de conversa é só a esfera: interromper é tocar nela ou
+          apertar espaço, e voz/velocidade/fones moram na aba IAs. */}
     </div>
   );
 }

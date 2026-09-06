@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { Ico } from "./Ico";
 import * as providers from "./providers";
 import type { Provider } from "./providers";
+import * as settings from "./settings";
 
 /* ================================= IAs =================================
    Quais IAs o Papinho consegue usar nesta máquina.
@@ -140,6 +142,8 @@ export function Ias() {
           ))}
         </div>
 
+        <VoiceSettings />
+
         <div className="mt-8 flex items-start gap-2.5 rounded-xl border border-hairline p-4">
           <span className="mt-0.5 shrink-0 text-ink-dim">
             <Ico n="bulb" className="h-4 w-4" />
@@ -152,5 +156,107 @@ export function Ias() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Voz do modo conversa. Mora aqui, e não na tela de conversa: lá a esfera
+ *  é a interface inteira — botão de configuração no meio de uma conversa
+ *  falada só atrapalha. */
+function VoiceSettings() {
+  const [voices, setVoices] = useState<Array<{ name: string; locale: string }>>(
+    [],
+  );
+  const voiceName = settings.useSetting("voiceName");
+  const rate = settings.useSetting("voiceRate");
+  const earphones = settings.useSetting("voiceEarphones");
+  const neural = voiceName.includes("IA local");
+
+  useEffect(() => {
+    void invoke<Array<{ name: string; locale: string }>>("tts_voices", {
+      locale: "pt_BR",
+    })
+      .then(setVoices)
+      .catch(() => {});
+  }, []);
+
+  /** troca a voz e já fala uma frase pra pessoa ouvir a diferença */
+  function pick(name: string) {
+    settings.set("voiceName", name);
+    void invoke("tts_stop").catch(() => {});
+    void invoke("tts_speak", {
+      id: `preview-${Date.now()}`,
+      voice: name,
+      rate,
+      text: "Oi, eu sou o Papinho. É assim que eu vou falar com você.",
+    }).catch(() => {});
+  }
+
+  return (
+    <section className="mt-10" aria-label="Voz do modo conversa">
+      <h2 className="chat-serif text-[22px] text-ink">Voz</h2>
+      <p className="mt-1 text-[13px] text-ink-dim">
+        Como o Papinho fala no modo conversa. Clique numa voz para ouvi-la.
+      </p>
+
+      <div className="mt-4 flex flex-wrap gap-1.5">
+        {voices.length === 0 && (
+          <p className="text-[12px] text-ink-dim">
+            nenhuma voz disponível — o motor de voz local não respondeu.
+          </p>
+        )}
+        {voices.map((v) => (
+          <button
+            key={v.name}
+            onClick={() => pick(v.name)}
+            aria-pressed={voiceName === v.name}
+            className={
+              "rounded-full px-3 py-1.5 text-[12px] transition-colors " +
+              (voiceName === v.name
+                ? "bg-primary/15 text-primary"
+                : "pill text-ink-dim hover:text-ink")
+            }
+          >
+            {v.name.replace(/\s*·\s*IA local$/, "")}
+          </button>
+        ))}
+      </div>
+
+      <div className="mt-5 flex flex-wrap items-center gap-4">
+        <label className="flex min-w-[16rem] flex-1 flex-col gap-1.5">
+          <span className="text-[11px] uppercase tracking-[0.16em] text-ink-dim">
+            velocidade · {neural ? `${(rate / 175).toFixed(2)}×` : `${rate} ppm`}
+          </span>
+          <input
+            aria-label="Velocidade da voz"
+            type="range"
+            min={120}
+            max={300}
+            step={5}
+            value={rate}
+            onChange={(e) =>
+              settings.set("voiceRate", Number(e.currentTarget.value))
+            }
+            className="w-full accent-[var(--color-primary)]"
+          />
+        </label>
+
+        <button
+          onClick={() => settings.set("voiceEarphones", !earphones)}
+          aria-pressed={earphones}
+          className={
+            "rounded-full px-3 py-1.5 text-[12px] transition-colors " +
+            (earphones ? "bg-primary/15 text-primary" : "pill text-ink-dim")
+          }
+          title="de fones não tem eco: o microfone fica aberto enquanto ele fala e dá pra cortar falando por cima"
+        >
+          usando fones {earphones ? "sim" : "não"}
+        </button>
+      </div>
+      <p className="mt-2 max-w-xl text-[11px] leading-relaxed text-ink-dim">
+        Sem fone, o microfone fecha enquanto o Papinho fala — senão ele se
+        escuta pelo alto-falante e responde a si mesmo. Com fone ligado aqui,
+        dá pra interromper falando por cima.
+      </p>
+    </section>
   );
 }
