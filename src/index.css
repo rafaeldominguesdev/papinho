@@ -44,6 +44,12 @@
   transition: none !important;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
   margin: 0;
   background: var(--color-bg);
@@ -618,6 +624,27 @@ a,
     background-position-x: -1536px; /* 24 frames × 64px */
   }
 }
+/* versão pequena (titlebar): mesmo sheet, 20px por frame */
+@keyframes logoSpritePlaySm {
+  from {
+    background-position-x: 0px;
+  }
+  to {
+    background-position-x: -480px; /* 24 frames × 20px */
+  }
+}
+.logo-wobble-sm {
+  background-repeat: no-repeat;
+  background-size: 480px 20px;
+  image-rendering: pixelated;
+  animation: logoSpritePlaySm 1.9s steps(24) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .logo-wobble-sm {
+    animation: none;
+  }
+}
+
 .logo-wobble-lg {
   background-repeat: no-repeat;
   background-size: 1536px 64px;
@@ -625,7 +652,28 @@ a,
   animation: logoSpritePlayLg 1.9s steps(24) infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .logo-wobble-lg {
+  /* versão pequena (titlebar): mesmo sheet, 20px por frame */
+@keyframes logoSpritePlaySm {
+  from {
+    background-position-x: 0px;
+  }
+  to {
+    background-position-x: -480px; /* 24 frames × 20px */
+  }
+}
+.logo-wobble-sm {
+  background-repeat: no-repeat;
+  background-size: 480px 20px;
+  image-rendering: pixelated;
+  animation: logoSpritePlaySm 1.9s steps(24) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .logo-wobble-sm {
+    animation: none;
+  }
+}
+
+.logo-wobble-lg {
     animation: none;
   }
 }

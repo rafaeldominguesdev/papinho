@@ -442,7 +442,23 @@ export default function App() {
   const showThread = section === "inicio" && active && active.msgs.length > 0;
 
   return (
-    <div className="fade-up relative z-10 flex min-h-0 flex-1 overflow-hidden bg-bg text-ink">
+    <div className="flex h-screen flex-col overflow-hidden bg-bg text-ink">
+      {/* faixa de arrastar: deixa espaço pros botões do macOS (overlay) */}
+      <div
+        data-tauri-drag-region
+        className="relative z-30 flex h-8 shrink-0 select-none items-center gap-2 border-b border-hairline pl-[76px] pr-3"
+      >
+        <span
+          aria-hidden
+          className="logo-wobble-sm h-5 w-5 shrink-0"
+          style={{ backgroundImage: `url(${logoSheet})` }}
+        />
+        <span className="text-[12px] font-medium tracking-tight text-ink">
+          Papinho
+        </span>
+      </div>
+
+    <div className="fade-up relative z-10 flex min-h-0 flex-1 overflow-hidden">
       <div className="pointer-events-none absolute inset-0 opacity-40">
         <HomeSky />
       </div>
@@ -453,7 +469,7 @@ export default function App() {
         title="mostrar barra lateral"
         aria-label="mostrar barra lateral"
         className={
-          "absolute left-2.5 top-2.5 z-30 flex h-8 w-8 items-center justify-center rounded-lg text-ink-dim transition-all duration-200 hover:bg-white/[0.06] hover:text-ink " +
+          "absolute left-2.5 top-2 z-30 flex h-8 w-8 items-center justify-center rounded-lg text-ink-dim transition-all duration-200 hover:bg-white/[0.06] hover:text-ink " +
           (collapsed
             ? "opacity-100 delay-150"
             : "pointer-events-none -translate-x-1.5 opacity-0")
@@ -475,11 +491,9 @@ export default function App() {
           (collapsed ? "opacity-0" : "opacity-100 delay-100")
         }
       >
-        {/* marca + controles */}
-        <div className="flex h-12 items-center gap-1.5 px-3">
-          <span className="mr-auto text-[17px] font-semibold tracking-tight text-ink">
-            Papinho
-          </span>
+        {/* controles da sidebar */}
+        <div className="flex h-11 items-center gap-1.5 px-3">
+          <span className="mr-auto" />
           <button
             onClick={() => setCollapsed(true)}
             title="recolher"
@@ -953,6 +967,7 @@ export default function App() {
           {notice}
         </div>
       )}
+      </div>
     </div>
   );
 }
