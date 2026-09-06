@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { HomeSky } from "./HomeSky";
+import { VoiceMode, type VoiceHooks } from "./VoiceMode";
 import { MODELS } from "./models";
 import { SKILLS, SKILL_SOURCES, skillSource, teamLogo } from "./skills";
 import * as settings from "./settings";
@@ -166,7 +167,15 @@ export default function App() {
   >(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const streamRef = useRef<{ turnId: string; chatId: string } | null>(null);
+  const streamRef = useRef<{
+    turnId: string;
+    chatId: string;
+    /** turno do modo conversa: os deltas também vão pro overlay falar */
+    voice?: boolean;
+  } | null>(null);
+  const [voiceOn, setVoiceOn] = useState(false);
+  /** o overlay de voz registra aqui como receber o stream do chat */
+  const voiceHooks = useRef<VoiceHooks | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -237,6 +246,7 @@ export default function App() {
         ...m,
         content: m.content + e.payload.text,
       }));
+      if (s.voice) voiceHooks.current?.onDelta(e.payload.text);
     }).then((u) => uns.push(u));
     listen<{ turnId: string; text: string }>("chat://done", (e) => {
       const s = streamRef.current;
@@ -250,6 +260,7 @@ export default function App() {
       );
       streamRef.current = null;
       setBusy(false);
+      if (s.voice) voiceHooks.current?.onDone();
     }).then((u) => uns.push(u));
     listen<{ turnId: string; message: string }>("chat://error", (e) => {
       const s = streamRef.current;
@@ -261,6 +272,7 @@ export default function App() {
       }));
       streamRef.current = null;
       setBusy(false);
+      if (s.voice) voiceHooks.current?.onError(e.payload.message);
     }).then((u) => uns.push(u));
     return () => uns.forEach((u) => u());
   }, []);
@@ -338,9 +350,13 @@ export default function App() {
     }
   }
 
-  async function send(over?: string) {
+  async function send(over?: string, opts?: { voice?: boolean }) {
     const text = (over ?? draft).trim();
-    if ((!text && pending.length === 0) || busy) return;
+    const voice = !!opts?.voice;
+    if (!text && pending.length === 0) return;
+    // no modo conversa a pessoa pode cortar a resposta falando por cima: o
+    // turno antigo vira órfão (o `streamRef` já aponta pro novo) e é ignorado.
+    if (busy && !voice) return;
     let chat = active;
     if (!chat) {
       chat = makeChat();
@@ -353,7 +369,7 @@ export default function App() {
     const effort = chat.effort;
     const chatId = chat.id;
     const imgs = pending;
-    streamRef.current = { turnId, chatId };
+    streamRef.current = { turnId, chatId, voice };
     setSection("inicio");
     setChats((cs) =>
       cs.map((c) =>
@@ -392,6 +408,7 @@ export default function App() {
         systemExtra: settings.get("chatSystemExtra") || null,
         images: imgs.map((i) => ({ mediaType: i.mediaType, data: i.data })),
         resume,
+        voice,
       });
     } catch (e) {
       patchLastAssistant(chatId, (m) => ({
@@ -401,6 +418,7 @@ export default function App() {
       }));
       streamRef.current = null;
       setBusy(false);
+      if (voice) voiceHooks.current?.onError(String(e));
     }
   }
 
@@ -936,7 +954,15 @@ export default function App() {
                     )}
                   </div>
 
-
+                  {/* modo conversa (fala ↔ fala) */}
+                  <button
+                    onClick={() => setVoiceOn(true)}
+                    title="conversar por voz"
+                    aria-label="conversar por voz"
+                    className="flex h-9 w-9 items-center justify-center rounded-full text-ink-dim transition-colors hover:bg-white/[0.08] hover:text-ink"
+                  >
+                    <Ico n="waves" />
+                  </button>
 
                   {/* enviar */}
                   <button
@@ -967,6 +993,14 @@ export default function App() {
           {notice}
         </div>
       )}
+
+      <VoiceMode
+        open={voiceOn}
+        onClose={() => setVoiceOn(false)}
+        onAsk={(t) => void send(t, { voice: true })}
+        hooksRef={voiceHooks}
+        chatTitle={active?.title ?? "novo papo"}
+      />
       </div>
     </div>
   );

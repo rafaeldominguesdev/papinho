@@ -20,6 +20,8 @@ pub async fn chat_send(
     system_extra: Option<String>,
     images: Vec<super::chat::ChatImage>,
     resume: bool,
+    // `voice`: turno do modo conversa — injeta as regras de fala e pede resposta curta
+    voice: Option<bool>,
 ) -> Result<()> {
     super::chat::send(
         app,
@@ -32,6 +34,7 @@ pub async fn chat_send(
         system_extra,
         images,
         resume,
+        voice.unwrap_or(false),
     )
     .await
 }

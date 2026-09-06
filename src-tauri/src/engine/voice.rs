@@ -71,6 +71,13 @@ mod imp {
     /// `voice_utterance` (a UI manda pro modelo e responde falando). Fora
     /// dele, as pausas só acumulam e o texto sai todo no `voice_final`.
     static CONVERSATION: AtomicBool = AtomicBool::new(false);
+    /// Microfone "surdo": o tap continua rodando (o engine não cai), mas o
+    /// áudio NÃO é entregue ao reconhecedor. É o que impede o Papinho de se
+    /// escutar falando no modo conversa — sem cancelamento de eco, o `say`
+    /// saindo pelo alto-falante voltaria pelo microfone e ele responderia a
+    /// si mesmo. Mutar/desmutar é instantâneo (só um bool), diferente de
+    /// derrubar e remontar o AVAudioEngine a cada frase.
+    static MUTED: AtomicBool = AtomicBool::new(false);
     /// Idioma do reconhecimento (Config › Voz). Vazio = pt-BR.
     static VOICE_LANG: Mutex<String> = Mutex::new(String::new());
     /// Pontuação automática (Config › Voz).
@@ -166,6 +173,12 @@ mod imp {
         });
     }
 
+    /// Liga/desliga o "mudo" do microfone (ver `MUTED`). Não toca em nada
+    /// Objective-C: pode ser chamado de qualquer thread, a qualquer hora.
+    pub fn set_muted(v: bool) {
+        MUTED.store(v, Ordering::SeqCst);
+    }
+
     /// Ponto de entrada: só despacha pra main thread.
     pub fn start(
         app: AppHandle,
@@ -176,6 +189,7 @@ mod imp {
         *VOICE_LANG.lock().unwrap() = lang.unwrap_or_default();
         VOICE_PUNCT.store(punctuation.unwrap_or(true), Ordering::SeqCst);
         CONVERSATION.store(conversation.unwrap_or(false), Ordering::SeqCst);
+        MUTED.store(false, Ordering::SeqCst);
         let handle = app.clone();
         app.run_on_main_thread(move || request_speech_auth(handle))
             .map_err(|e| e.to_string())
@@ -437,6 +451,12 @@ mod imp {
         let request_tap = request.clone();
         let tap_block: TapBlock = RcBlock::new(
             move |buffer: NonNull<AVAudioPCMBuffer>, _when: NonNull<AVAudioTime>| {
+                // mutado (o Papinho está falando): não alimenta o
+                // reconhecedor nem mexe no medidor — a UI mostra o estado
+                // "falando" e o orbe reage à fala, não ao microfone.
+                if MUTED.load(Ordering::SeqCst) {
+                    return;
+                }
                 let buffer = unsafe { buffer.as_ref() };
                 unsafe { request_tap.appendAudioPCMBuffer(buffer) };
 
@@ -540,6 +560,22 @@ pub async fn voice_hotkey_start(app: tauri::AppHandle) -> Result<(), String> {
         let _ = app;
         Ok(())
     }
+}
+
+/// Modo conversa: fecha o microfone enquanto o Papinho fala (senão ele se
+/// escuta) e reabre quando termina. Mantém a captação viva — só para de
+/// entregar áudio ao reconhecedor.
+#[tauri::command]
+pub async fn voice_mute(muted: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        imp::set_muted(muted);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = muted;
+    }
+    Ok(())
 }
 
 /// Para o engine, remove o tap, finaliza o request e cancela a task.

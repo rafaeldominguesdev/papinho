@@ -14,6 +14,12 @@ export type Settings = {
   chatEffort: string;
   /** instrução extra anexada ao system prompt */
   chatSystemExtra: string;
+  /** voz do macOS usada no modo conversa ("" = padrão do sistema) */
+  voiceName: string;
+  /** velocidade da fala em palavras por minuto (o padrão do `say` é ~175) */
+  voiceRate: number;
+  /** de fone: deixa o microfone aberto enquanto ele fala (dá pra interromper) */
+  voiceEarphones: boolean;
 };
 
 export const DEFAULTS: Settings = {
@@ -21,6 +27,9 @@ export const DEFAULTS: Settings = {
   chatModel: "claude-sonnet-5",
   chatEffort: "",
   chatSystemExtra: "",
+  voiceName: "",
+  voiceRate: 190,
+  voiceEarphones: false,
 };
 
 const KEY = "papinho.settings";

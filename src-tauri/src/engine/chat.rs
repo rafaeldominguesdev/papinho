@@ -29,9 +29,21 @@ use tokio::process::Command;
 use crate::engine::error::EngineError;
 use crate::engine::Result;
 
-const SYSTEM: &str = "Você é um assistente de chat de propósito geral dentro do DevTerm. \
+const SYSTEM: &str = "Você é o Papinho, um assistente de chat de propósito geral. \
 Responda em português do Brasil, de forma direta e útil. Você é só conversa: não tem \
 ferramentas, terminal nem acesso a arquivos.";
+
+/// Modo conversa (voz): vai em TODO turno falado — inclusive nos `--resume`,
+/// porque o `--append-system-prompt` também vale pra sessão retomada. O que a
+/// pessoa ouve é um `say` lendo o texto, então nada de markdown, listas ou
+/// blocos de código, e resposta curta: cada frase a mais é tempo de áudio.
+const SYSTEM_VOICE: &str = "MODO CONVERSA POR VOZ: a pessoa está FALANDO com você e vai \
+OUVIR a sua resposta em áudio. Fale como gente ao telefone: 1 a 3 frases curtas, no máximo \
+umas 60 palavras, direto ao ponto. NADA de markdown, títulos, listas numeradas, emojis, \
+tabelas ou blocos de código — só texto corrido pra ser lido em voz alta. Escreva números, \
+símbolos e siglas por extenso quando ajudar a pronúncia. Se a pergunta pedir uma resposta \
+longa, dê o resumo falado e ofereça detalhar. O texto vem de reconhecimento de fala: pode \
+ter palavra trocada — entenda pelo contexto em vez de reclamar da transcrição.";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +67,7 @@ pub async fn send(
     system_extra: Option<String>,
     images: Vec<ChatImage>,
     resume: bool,
+    voice: bool,
 ) -> Result<()> {
     let mut cmd = Command::new("claude");
     cmd.current_dir(std::env::temp_dir())
@@ -72,6 +85,11 @@ pub async fn send(
 
     if resume {
         cmd.arg("--resume").arg(&session_id);
+        // sessão já existe: o system prompt base já foi dado na 1ª mensagem.
+        // Só o modo voz precisa reforçar as regras de fala a cada turno.
+        if voice {
+            cmd.arg("--append-system-prompt").arg(SYSTEM_VOICE);
+        }
     } else {
         cmd.arg("--session-id").arg(&session_id);
         let mut sys = SYSTEM.to_string();
@@ -92,6 +110,10 @@ pub async fn send(
         {
             sys.push(' ');
             sys.push_str(x);
+        }
+        if voice {
+            sys.push(' ');
+            sys.push_str(SYSTEM_VOICE);
         }
         cmd.arg("--append-system-prompt").arg(&sys);
     }

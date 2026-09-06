@@ -652,29 +652,68 @@ a,
   animation: logoSpritePlayLg 1.9s steps(24) infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  /* versão pequena (titlebar): mesmo sheet, 20px por frame */
-@keyframes logoSpritePlaySm {
-  from {
-    background-position-x: 0px;
-  }
-  to {
-    background-position-x: -480px; /* 24 frames × 20px */
-  }
-}
-.logo-wobble-sm {
-  background-repeat: no-repeat;
-  background-size: 480px 20px;
-  image-rendering: pixelated;
-  animation: logoSpritePlaySm 1.9s steps(24) infinite;
-}
-@media (prefers-reduced-motion: reduce) {
-  .logo-wobble-sm {
+  .logo-wobble-lg {
     animation: none;
   }
 }
 
-.logo-wobble-lg {
+/* ---- modo conversa (VoiceMode.tsx): o orbe é o "rosto" da conversa —
+   respira com o microfone quando ouve, gira quando pensa e pulsa quando
+   fala. Vermelho do app, sem neon: só um radial macio + um anel hairline. */
+.vo-orb {
+  position: absolute;
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 50% 42%,
+    color-mix(in srgb, var(--color-primary) 42%, transparent),
+    color-mix(in srgb, var(--color-primary) 12%, transparent) 58%,
+    transparent 72%
+  );
+  transition: transform 110ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+.vo-orb-speak {
+  animation: voSpeak 1.5s ease-in-out infinite;
+}
+@keyframes voSpeak {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.16);
+    opacity: 1;
+  }
+}
+.vo-orb-think {
+  animation: voThink 2.4s ease-in-out infinite;
+  opacity: 0.5;
+}
+@keyframes voThink {
+  0%,
+  100% {
+    transform: scale(0.9);
+  }
+  50% {
+    transform: scale(0.98);
+  }
+}
+.vo-ring {
+  position: absolute;
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  border: 1px solid var(--color-hairline-strong);
+}
+@media (prefers-reduced-motion: reduce) {
+  .vo-orb,
+  .vo-orb-speak,
+  .vo-orb-think {
     animation: none;
+    transition: none;
   }
 }
 

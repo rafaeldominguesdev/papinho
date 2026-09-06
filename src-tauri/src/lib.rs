@@ -18,6 +18,7 @@ pub fn run() {
             ipc::tts_voices,
             voice::voice_start,
             voice::voice_stop,
+            voice::voice_mute,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
