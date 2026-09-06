@@ -7,7 +7,7 @@ import { HomeSky } from "./HomeSky";
 import { MODELS } from "./models";
 import { SKILLS, SKILL_SOURCES, skillSource, teamLogo } from "./skills";
 import * as settings from "./settings";
-// TODO: trocar pela logo do Papinho (sprite de 24 frames — scripts/make_logo_sheet.py)
+// mascote do Papinho — sprite de 24 frames (scripts/make_logo_sheet.py)
 import logoSheet from "./assets/logo-sheet.png";
 
 /* ================================ Papinho ================================

@@ -622,7 +622,7 @@ a,
   background-repeat: no-repeat;
   background-size: 1536px 64px;
   image-rendering: pixelated;
-  animation: logoSpritePlayLg 1.1s steps(24) infinite;
+  animation: logoSpritePlayLg 1.9s steps(24) infinite;
 }
 @media (prefers-reduced-motion: reduce) {
   .logo-wobble-lg {
