@@ -48,14 +48,16 @@ mod imp {
         task: Retained<SFSpeechRecognitionTask>,
         _result_block: ResultBlock,
         _tap_block: TapBlock,
+        active: Arc<AtomicBool>,
     }
 
     thread_local! {
         static VOICE: RefCell<Option<VoiceHandle>> = const { RefCell::new(None) };
     }
 
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
 
     /// `true` depois que a UI pediu pra parar (soltou a tecla / clicou). Enquanto
     /// `false`, um `isFinal` que o reconhecedor emite sozinho (pausa curta no
@@ -82,6 +84,23 @@ mod imp {
     static VOICE_LANG: Mutex<String> = Mutex::new(String::new());
     /// Pontuação automática (Config › Voz).
     static VOICE_PUNCT: AtomicBool = AtomicBool::new(true);
+
+    fn pause_finished(now: u64, last_sound: u64, last_text: u64) -> bool {
+        now.saturating_sub(last_sound) >= 1100 && now.saturating_sub(last_text) >= 650
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::pause_finished;
+
+        #[test]
+        fn waits_for_both_silence_and_transcription_to_settle() {
+            assert!(!pause_finished(2000, 1000, 1000));
+            assert!(!pause_finished(2000, 0, 1500));
+            assert!(pause_finished(2100, 1000, 1450));
+            assert!(!pause_finished(500, 1000, 1000));
+        }
+    }
 
     fn emit_error(app: &AppHandle, msg: impl Into<String>) {
         let msg = msg.into();
@@ -254,6 +273,7 @@ mod imp {
     fn teardown() {
         VOICE.with(|slot| {
             if let Some(h) = slot.borrow_mut().take() {
+                h.active.store(false, Ordering::SeqCst);
                 unsafe {
                     h.engine.stop();
                     h.input_node.removeTapOnBus(0);
@@ -376,6 +396,11 @@ mod imp {
         let engine = unsafe { AVAudioEngine::new() };
         let input_node = unsafe { engine.inputNode() };
         let format = unsafe { input_node.outputFormatForBus(0) };
+        let active = Arc::new(AtomicBool::new(true));
+        let has_text = Arc::new(AtomicBool::new(false));
+        let ending = Arc::new(AtomicBool::new(false));
+        let last_text = Arc::new(AtomicU64::new(0));
+        let started = Instant::now();
 
         // result handler -> voice_partial / voice_final / voice_error
         //
@@ -384,8 +409,14 @@ mod imp {
         // pausa), guardamos o trecho e reiniciamos a captação — assim a fala
         // que vem DEPOIS da pausa não é perdida.
         let app_res = app.clone();
+        let active_res = active.clone();
+        let has_text_res = has_text.clone();
+        let last_text_res = last_text.clone();
         let result_block: ResultBlock = RcBlock::new(
             move |result: *mut SFSpeechRecognitionResult, error: *mut NSError| {
+                if !active_res.load(Ordering::SeqCst) {
+                    return;
+                }
                 if let Some(error) = NonNull::new(error) {
                     let error = unsafe { error.as_ref() };
                     let msg = error.localizedDescription().to_string();
@@ -394,6 +425,7 @@ mod imp {
                     if MANUAL_STOP.load(Ordering::SeqCst) && !SEGMENTS.lock().unwrap().is_empty() {
                         deliver_final(&app_res, "");
                     } else {
+                        crate::engine::diag::log("voz", format!("reconhecimento falhou: {msg}"));
                         let _ = app_res.emit("voice_error", serde_json::json!({ "message": msg }));
                     }
                     let _ = app_res.run_on_main_thread(teardown);
@@ -406,6 +438,12 @@ mod imp {
                 let result = unsafe { result.as_ref() };
                 let text = unsafe { result.bestTranscription().formattedString() }.to_string();
                 let is_final = unsafe { result.isFinal() };
+                if !text.trim().is_empty() {
+                    if !has_text_res.swap(true, Ordering::SeqCst) {
+                        crate::engine::diag::log("voz", "primeira transcrição recebida");
+                    }
+                    last_text_res.store(started.elapsed().as_millis() as u64, Ordering::SeqCst);
+                }
 
                 if !is_final {
                     let _ = app_res.emit(
@@ -473,16 +511,20 @@ mod imp {
         // tap no input node: alimenta o request + calcula RMS -> voice_level
         let app_lvl = app.clone();
         let request_tap = request.clone();
+        let active_tap = active.clone();
+        let last_sound = AtomicU64::new(0);
         let tap_block: TapBlock = RcBlock::new(
             move |buffer: NonNull<AVAudioPCMBuffer>, _when: NonNull<AVAudioTime>| {
                 // mutado (o Papinho está falando): não alimenta o
                 // reconhecedor nem mexe no medidor — a UI mostra o estado
                 // "falando" e o orbe reage à fala, não ao microfone.
-                if MUTED.load(Ordering::SeqCst) {
+                if !active_tap.load(Ordering::SeqCst) || MUTED.load(Ordering::SeqCst) {
                     return;
                 }
                 let buffer = unsafe { buffer.as_ref() };
-                unsafe { request_tap.appendAudioPCMBuffer(buffer) };
+                if !ending.load(Ordering::SeqCst) {
+                    unsafe { request_tap.appendAudioPCMBuffer(buffer) };
+                }
 
                 let frames = unsafe { buffer.frameLength() } as usize;
                 let channels = unsafe { buffer.floatChannelData() };
@@ -511,6 +553,25 @@ mod imp {
                     -120.0
                 };
                 let level = (((dbfs + 55.0) / 47.0) as f32).clamp(0.0, 1.0);
+                let now = started.elapsed().as_millis() as u64;
+                if dbfs > -40.0 {
+                    last_sound.store(now, Ordering::SeqCst);
+                }
+                // isFinal não é um detector de pausa: encerra explicitamente
+                // o áudio depois de texto reconhecido e silêncio sustentado.
+                if CONVERSATION.load(Ordering::SeqCst)
+                    && !MANUAL_STOP.load(Ordering::SeqCst)
+                    && has_text.load(Ordering::SeqCst)
+                    && pause_finished(
+                        now,
+                        last_sound.load(Ordering::SeqCst),
+                        last_text.load(Ordering::SeqCst),
+                    )
+                    && !ending.swap(true, Ordering::SeqCst)
+                {
+                    crate::engine::diag::log("voz", "pausa detectada, finalizando transcrição");
+                    unsafe { request_tap.endAudio() };
+                }
                 // Clipe DE VERDADE: amostra encostou no teto (±1.0). Isso sim
                 // distorce o áudio e atrapalha o reconhecimento — a UI usa pra
                 // avisar de baixar o volume de entrada do macOS.
@@ -545,6 +606,7 @@ mod imp {
             task,
             _result_block: result_block,
             _tap_block: tap_block,
+            active,
         })
     }
 }

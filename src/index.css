@@ -17,6 +17,9 @@
   --color-rain: #4a3a3e;
   --color-success: #3ecf8e;
   --color-danger: #ff5a5f;
+  --color-voice-core: #ffffff;
+  --color-voice-silver: #c9cdd2;
+  --color-voice-muted: #747a83;
 
   /* arcade × clean (ver docs/design/devterm-style.md): TODA borda do app é
      hairline — branco semi-transparente que some no fundo, não um cinza hex.
@@ -650,6 +653,30 @@ a,
   background-size: 1536px 64px;
   image-rendering: pixelated;
   animation: logoSpritePlayLg 1.9s steps(24) infinite;
+}
+
+/* versão grande da saudação: 128px por frame (o sheet inteiro escalado 2×).
+   O frame TEM que ter a largura do elemento — num elemento de 128px com
+   frames de 64px apareciam dois Papinhos lado a lado, o atual e o próximo
+   quadro da folha. */
+@keyframes logoSpritePlayXl {
+  from {
+    background-position-x: 0px;
+  }
+  to {
+    background-position-x: -3072px; /* 24 frames × 128px */
+  }
+}
+.logo-wobble-xl {
+  background-repeat: no-repeat;
+  background-size: 3072px 128px;
+  image-rendering: pixelated;
+  animation: logoSpritePlayXl 1.9s steps(24) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .logo-wobble-xl {
+    animation: none;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .logo-wobble-lg {

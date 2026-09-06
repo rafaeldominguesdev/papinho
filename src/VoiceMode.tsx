@@ -7,7 +7,7 @@ import { VoiceOrb } from "./VoiceOrb";
 /* ============================= MODO CONVERSA =============================
    Papo falado, no espírito do ChatGPT/Grok — mas montado com peça grátis e
    local: fala → texto pelo Speech.framework do macOS (`voice.rs`), resposta
-   pelo `claude --print` de sempre, texto → fala pelo `say` (`tts.rs`).
+   pelo `claude --print`, texto → fala pelo Kokoro local ou `say` (`tts.rs`).
 
    O loop:
      ouvindo  →  pausa natural fecha a fala  →  `voice_utterance`
@@ -35,13 +35,6 @@ export type VoiceHooks = {
 
 type Phase = "starting" | "listening" | "thinking" | "speaking";
 
-const PHASE_LABEL: Record<Phase, string> = {
-  starting: "preparando o microfone…",
-  listening: "ouvindo",
-  thinking: "pensando",
-  speaking: "falando",
-};
-
 /** tira markdown/emoji: o `say` lê tudo literalmente, inclusive os asteriscos */
 function speechText(s: string): string {
   return s
@@ -58,23 +51,21 @@ function speechText(s: string): string {
     .trim();
 }
 
-/** fim da 1ª frase do buffer, ou -1 se ainda não dá pra cortar.
- *  `eager` (1º trecho da resposta) corta também em vírgula/dois-pontos —
- *  começar a falar meio segundo antes muda a sensação de conversa. */
-function sentenceEnd(s: string, eager: boolean): number {
+/** Preserva frases completas para o sintetizador manter a entonação. */
+function sentenceEnd(s: string): number {
   for (let i = 0; i < s.length; i++) {
     const c = s[i];
     if (c === "\n") return i + 1;
     const strong = c === "." || c === "!" || c === "?" || c === "…";
-    const soft = eager && i >= 24 && (c === "," || c === ":" || c === ";");
+    const soft = i >= 240 && (c === "," || c === ":" || c === ";");
     if (!strong && !soft) continue;
     const next = s[i + 1];
     if (next === undefined) continue; // pode ser "3." de "3.5" — espera o resto
     if (/\s/.test(next)) return i + 1;
   }
   // frase quilométrica sem pontuação: corta no último espaço pra não travar
-  if (s.length > 170) {
-    const sp = s.lastIndexOf(" ", 160);
+  if (s.length > 360) {
+    const sp = s.lastIndexOf(" ", 350);
     if (sp > 40) return sp + 1;
   }
   return -1;
@@ -107,7 +98,6 @@ export function VoiceMode({
   const [level, setLevel] = useState(0);
   const [partial, setPartial] = useState("");
   const [said, setSaid] = useState("");
-  const [reply, setReply] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [voices, setVoices] = useState<Array<{ name: string; locale: string }>>(
     [],
@@ -125,7 +115,7 @@ export function VoiceMode({
   const curId = useRef(""); // id da fala em curso ("" = ignorar o tts://done)
   const seq = useRef(0);
   const streamDone = useRef(true);
-  const eager = useRef(true); // ainda não falei nada desta resposta
+  const accepting = useRef(false);
   const earRef = useRef(earphones);
   earRef.current = earphones;
 
@@ -144,7 +134,6 @@ export function VoiceMode({
     buf.current = "";
     speaking.current = false;
     curId.current = "";
-    eager.current = true;
     setPartial("");
     setLevel(0);
     setPhase("listening");
@@ -160,7 +149,6 @@ export function VoiceMode({
       return;
     }
     speaking.current = true;
-    eager.current = false;
     const id = String(++seq.current);
     curId.current = id;
     setPhase("speaking");
@@ -171,15 +159,19 @@ export function VoiceMode({
       voice: voiceName || null,
       rate: rate || null,
     }).catch((e) => {
+      if (curId.current !== id) return;
       diag(`tts_speak falhou: ${String(e)}`);
       setErr(String(e));
+      accepting.current = false;
+      streamDone.current = true;
+      backToListening();
     });
   }
 
   /** fatia o que chegou em frases e mantém a fala andando */
   function pump() {
     for (;;) {
-      const cut = sentenceEnd(buf.current, eager.current && !speaking.current);
+      const cut = sentenceEnd(buf.current);
       if (cut < 0) break;
       const chunk = speechText(buf.current.slice(0, cut));
       buf.current = buf.current.slice(cut);
@@ -189,6 +181,8 @@ export function VoiceMode({
   }
 
   function interrupt() {
+    accepting.current = false;
+    streamDone.current = true;
     curId.current = ""; // o tts://done desta fala não deve emendar a próxima
     queue.current = [];
     speaking.current = false;
@@ -198,17 +192,42 @@ export function VoiceMode({
 
   fns.current = { speakNext, interrupt };
 
+  async function previewVoice(name: string) {
+    accepting.current = false;
+    streamDone.current = true;
+    queue.current = [];
+    buf.current = "";
+    settings.set("voiceName", name);
+    const id = `preview-${++seq.current}`;
+    curId.current = id;
+    speaking.current = true;
+    setErr(null);
+    setPhase("speaking");
+    mute(true);
+    try {
+      await invoke("tts_stop");
+      if (curId.current !== id) return;
+      await invoke("tts_speak", { id, voice: name, rate,
+        text: "Oi, eu sou o Papinho. Pode falar comigo à vontade. Como foi o seu dia?" });
+    } catch (error) {
+      if (curId.current !== id) return;
+      setErr(String(error));
+      backToListening();
+    }
+  }
+
   // ---- o App empurra o stream do chat pra cá (atualiza a cada render pra as
   //      closures verem o estado novo)
   useEffect(() => {
     hooksRef.current = open
       ? {
           onDelta: (t) => {
-            setReply((r) => r + t);
+            if (!accepting.current) return;
             buf.current += t;
             pump();
           },
           onDone: () => {
+            if (!accepting.current) return;
             streamDone.current = true;
             const rest = speechText(buf.current);
             buf.current = "";
@@ -219,6 +238,8 @@ export function VoiceMode({
             }
           },
           onError: (message) => {
+            if (!accepting.current) return;
+            accepting.current = false;
             streamDone.current = true;
             buf.current = "";
             queue.current = [];
@@ -238,12 +259,11 @@ export function VoiceMode({
     if (speaking.current) fns.current.interrupt(); // falou por cima (de fone)
     setErr(null);
     setSaid(t);
-    setReply("");
     setPartial("");
     buf.current = "";
     queue.current = [];
     streamDone.current = false;
-    eager.current = true;
+    accepting.current = true;
     setPhase("thinking");
     mute(true); // enquanto pensa, não capta o barulho da sala
     onAsk(t);
@@ -284,20 +304,27 @@ export function VoiceMode({
         fns.current.speakNext();
       }),
     );
+    add(
+      listen<{ id: string; message: string }>("tts://error", (e) => {
+        if (e.payload.id !== curId.current) return;
+        fns.current.interrupt();
+        setErr(e.payload.message);
+      }),
+    );
 
     diag("modo conversa aberto");
     setPhase("starting");
     setErr(null);
     setSaid("");
-    setReply("");
     streamDone.current = true;
     void invoke("voice_start", {
       lang: "pt-BR",
       punctuation: true,
       conversation: true,
     })
-      .then(() => setPhase((p) => (p === "starting" ? "listening" : p)))
+      .then(() => { if (!dead) setPhase((p) => (p === "starting" ? "listening" : p)); })
       .catch((e) => {
+        if (dead) return;
         diag(`voice_start falhou: ${String(e)}`);
         setErr(String(e));
       });
@@ -306,22 +333,26 @@ export function VoiceMode({
       locale: "pt_BR",
     })
       .then((vs) => {
+        if (dead) return;
         diag(`vozes pt-BR encontradas: ${vs.length}`);
         setVoices(vs);
-        // 1ª vez: sem escolha, o `say` usaria a voz padrão do sistema — que
-        // costuma ser em inglês e lê português de um jeito sofrível.
-        if (!settings.get("voiceName") && vs.length) {
-          const pick =
-            vs.find((v) => v.name.startsWith("Luciana")) ??
-            vs.find((v) => v.name.startsWith("Flo")) ??
-            vs[0];
-          settings.set("voiceName", pick.name);
+        if (vs.length && (!settings.get("voiceNeuralConfigured") || !vs.some((v) => v.name === settings.get("voiceName")))) {
+          settings.set("voiceName", "Alex · IA local");
+          settings.set("voiceRate", 175);
+          settings.set("voiceNeuralConfigured", true);
         }
       })
       .catch(() => {});
 
     return () => {
       dead = true;
+      accepting.current = false;
+      streamDone.current = true;
+      curId.current = "";
+      speaking.current = false;
+      queue.current = [];
+      buf.current = "";
+      hooksRef.current = null;
       uns.forEach((u) => u());
       void invoke("tts_stop").catch(() => {});
       void invoke("voice_mute", { muted: false }).catch(() => {});
@@ -331,7 +362,9 @@ export function VoiceMode({
 
   // fone ligado no meio do papo: reabre o microfone na hora
   useEffect(() => {
-    if (open && earphones) void invoke("voice_mute", { muted: false }).catch(() => {});
+    if (open) void invoke("voice_mute", {
+      muted: !earphones && (speaking.current || !streamDone.current),
+    }).catch(() => {});
   }, [open, earphones]);
 
   useEffect(() => {
@@ -340,7 +373,8 @@ export function VoiceMode({
       if (e.key === "Escape") {
         e.preventDefault();
         onClose();
-      } else if (e.code === "Space" && speaking.current) {
+      } else if (e.code === "Space" && speaking.current &&
+        !(e.target instanceof HTMLElement && e.target.closest("button, input, select, textarea"))) {
         e.preventDefault();
         interrupt();
       }
@@ -372,36 +406,19 @@ export function VoiceMode({
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-8 px-8">
         <button
           onClick={() => (phase === "speaking" ? interrupt() : undefined)}
-          className="relative grid place-items-center rounded-full outline-none"
-          title={phase === "speaking" ? "interromper (espaço)" : PHASE_LABEL[phase]}
+          className="relative grid max-w-full place-items-center rounded-full focus-visible:outline-2 focus-visible:outline-primary"
+          aria-label={phase === "speaking" ? "Interromper resposta" : "Esfera de voz"}
+          title={phase === "speaking" ? "interromper (espaço)" : "esfera de voz"}
         >
-          <VoiceOrb phase={phase} level={level} size={320} />
+          <VoiceOrb phase={phase} level={level} size={420} />
         </button>
 
         <div className="flex flex-col items-center gap-2 text-center">
-          <p className="text-[11px] uppercase tracking-[0.2em] text-primary">
-            {PHASE_LABEL[phase]}
-            {phase === "listening" && <span className="tok-counting"> ●</span>}
-          </p>
-          {/* ouvindo: a transcrição ao vivo; senão a resposta sendo falada.
-              Entre um turno e outro fica a última resposta na tela — some só
-              quando a pessoa começa a falar de novo. */}
           <p className="chat-serif min-h-[3.5rem] max-w-2xl text-[17px] leading-relaxed text-ink">
-            {phase === "listening"
-              ? partial ||
-                reply ||
-                (phase === "listening" && !said
-                  ? "pode falar — eu respondo em voz alta."
-                  : "")
-              : reply}
+            {partial || said}
           </p>
-          {said && phase !== "listening" && (
-            <p className="max-w-xl truncate text-[12px] text-ink-dim">
-              você: “{said}”
-            </p>
-          )}
           {err && (
-            <p className="max-w-xl text-[12px] text-danger">{err}</p>
+            <p role="alert" className="max-w-xl text-[12px] text-danger">{err}</p>
           )}
         </div>
       </div>
@@ -409,6 +426,7 @@ export function VoiceMode({
       <div className="flex items-center justify-center gap-2 px-6 pb-8">
         <button
           onClick={() => settings.set("voiceEarphones", !earphones)}
+          aria-pressed={earphones}
           className={
             "pill px-3 py-1.5 text-[11px] " +
             (earphones ? "border-primary/50 text-primary" : "text-ink-dim")
@@ -425,6 +443,7 @@ export function VoiceMode({
         <div className="relative">
           <button
             onClick={() => setMenu((m) => !m)}
+            aria-expanded={menu}
             className="pill px-3 py-1.5 text-[11px] text-ink-dim"
             title="voz e velocidade"
           >
@@ -433,7 +452,7 @@ export function VoiceMode({
           {menu && (
             <div className="absolute bottom-10 left-1/2 z-30 w-[300px] -translate-x-1/2 pop p-3">
               <p className="mb-2 px-1 text-[10px] uppercase tracking-[0.16em] text-ink-dim">
-                voz (pt-BR do macOS)
+                vozes em português
               </p>
               <div className="flex max-h-52 flex-col gap-0.5 overflow-y-auto">
                 {voices.length === 0 && (
@@ -446,18 +465,8 @@ export function VoiceMode({
                 {voices.map((v) => (
                   <button
                     key={v.name}
-                    onClick={() => {
-                      settings.set("voiceName", v.name);
-                      setMenu(false);
-                      curId.current = "preview";
-                      mute(true);
-                      void invoke("tts_speak", {
-                        id: "preview",
-                        text: `Oi, eu sou o Papinho. Vou falar com a voz da ${shortVoice(v.name)}.`,
-                        voice: v.name,
-                        rate: rate || null,
-                      }).catch(() => {});
-                    }}
+                    onClick={() => void previewVoice(v.name)}
+                    aria-pressed={voiceName === v.name}
                     className={
                       "rounded px-2 py-1.5 text-left text-[12px] hover:bg-white/[0.06] " +
                       (voiceName === v.name ? "text-primary" : "text-ink")
@@ -468,13 +477,14 @@ export function VoiceMode({
                 ))}
               </div>
               <p className="mb-1 mt-3 px-1 text-[10px] uppercase tracking-[0.16em] text-ink-dim">
-                velocidade · {rate} ppm
+                velocidade · {voiceName.includes("IA local") ? `${(rate / 175).toFixed(2)}×` : `${rate} ppm`}
               </p>
               <input
+                aria-label="Velocidade da voz"
                 type="range"
                 min={120}
                 max={300}
-                step={10}
+                step={5}
                 value={rate}
                 onChange={(e) =>
                   settings.set("voiceRate", Number(e.currentTarget.value))

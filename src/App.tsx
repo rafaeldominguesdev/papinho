@@ -5,6 +5,11 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { HomeSky } from "./HomeSky";
 import { VoiceMode, type VoiceHooks } from "./VoiceMode";
+import { Ico } from "./Ico";
+import { Scheduled } from "./Scheduled";
+import { Projects } from "./ProjectsView";
+import * as tasksStore from "./tasks";
+import * as projectsStore from "./projects";
 import { MODELS } from "./models";
 import { SKILLS, SKILL_SOURCES, skillSource, teamLogo } from "./skills";
 import * as settings from "./settings";
@@ -30,6 +35,8 @@ type Chat = {
   msgs: ChatMsg[];
   turns: number; // respostas já recebidas — >0 usa --resume
   createdAt: number;
+  /** projeto a que a conversa pertence (as instruções dele vão no system) */
+  projectId?: string;
 };
 
 /** imagem escolhida mas ainda não enviada */
@@ -49,6 +56,9 @@ const EFFORT_LABEL: Record<string, string> = {
   xhigh: "pensar: muito alto",
   max: "pensar: máximo",
 };
+
+/** versão mostrada na titlebar (mesmo formato do DevTerm) */
+export const APP_VERSION = "1.0.0";
 
 const CHATS_KEY = "papinho.chats";
 const CHAT_MODEL_KEY = "papinho.chat.model";
@@ -78,48 +88,6 @@ function loadChats(): Chat[] {
 }
 
 /** ícones do chat — um só componente, path por nome. 24×24, stroke. */
-function Ico({ n, className }: { n: string; className?: string }) {
-  const P: Record<string, string> = {
-    search: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14ZM20 20l-4-4",
-    sidebar: "M4 5h16v14H4zM9 5v14",
-    plus: "M12 5v14M5 12h14",
-    home: "M4 11l8-7 8 7M6 10v10h12V10",
-    code: "M9 8l-4 4 4 4M15 8l4 4-4 4",
-    folder: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z",
-    shapes: "M8 4a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM13 13h7v7h-7z",
-    clock: "M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16ZM12 8v4l3 2",
-    wrench: "M15 5a4 4 0 0 0-5.5 4.7L4 15l3 3 5.3-5.3A4 4 0 0 0 17 7l-2.3 2.3-1.7-.3-.3-1.7L15 5Z",
-    sliders: "M4 8h9M17 8h3M4 16h3M11 16h9",
-    palette: "M12 4a8 8 0 1 0 0 16c1.2 0 1.5-1 1-1.7-.6-.9 0-2.3 1.2-2.3H17a3 3 0 0 0 3-3c0-4.4-3.6-9-8-9Z",
-    chevron: "M7 10l5 5 5-5",
-    download: "M12 4v11M8 11l4 4 4-4M5 20h14",
-    waves: "M6 10v4M10 6v12M14 9v6M18 11v2",
-    help: "M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16ZM9.8 9a2.3 2.3 0 1 1 3.3 2.1c-.8.4-1.1 1-1.1 1.9M12 16h.01",
-    pencil: "M4 20l1-4L16 5l3 3L8 19l-4 1Z",
-    cap: "M3 9l9-4 9 4-9 4-9-4ZM7 11v4c0 1.4 2.2 2.5 5 2.5s5-1.1 5-2.5v-4",
-    chat: "M4 5h16v10H9l-4 4V5Z",
-    mail: "M4 6h16v12H4zM4 7l8 6 8-6",
-    spark: "M12 3v6M12 15v6M3 12h6M15 12h6M6.2 6.2l3.5 3.5M14.3 14.3l3.5 3.5M17.8 6.2l-3.5 3.5M9.7 14.3l-3.5 3.5",
-    trash: "M5 7h14M10 7V5h4v2M8 7l1 12h6l1-12",
-    bulb: "M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3Z",
-    book: "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3V4ZM5 17a3 3 0 0 1 3-3h11",
-  };
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-      className={className ?? "h-[18px] w-[18px]"}
-    >
-      <path d={P[n] ?? ""} />
-    </svg>
-  );
-}
-
 type ChatSection = "inicio" | "projetos" | "skills" | "programado";
 
 export default function App() {
@@ -174,6 +142,8 @@ export default function App() {
     voice?: boolean;
   } | null>(null);
   const [voiceOn, setVoiceOn] = useState(false);
+  /** projeto aberto: filtra a lista lateral e carimba as conversas novas */
+  const [projectId, setProjectId] = useState<string | null>(null);
   /** o overlay de voz registra aqui como receber o stream do chat */
   const voiceHooks = useRef<VoiceHooks | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -277,7 +247,7 @@ export default function App() {
     return () => uns.forEach((u) => u());
   }, []);
 
-  function makeChat(): Chat {
+  function makeChat(pid = projectId): Chat {
     return {
       id: uuid(),
       title: "novo chat",
@@ -286,6 +256,7 @@ export default function App() {
       msgs: [],
       turns: 0,
       createdAt: Date.now(),
+      projectId: pid ?? undefined,
     };
   }
 
@@ -350,14 +321,19 @@ export default function App() {
     }
   }
 
-  async function send(over?: string, opts?: { voice?: boolean }) {
+  async function send(
+    over?: string,
+    opts?: { voice?: boolean; chat?: Chat; title?: string },
+  ) {
     const text = (over ?? draft).trim();
     const voice = !!opts?.voice;
     if (!text && pending.length === 0) return;
     // no modo conversa a pessoa pode cortar a resposta falando por cima: o
     // turno antigo vira órfão (o `streamRef` já aponta pro novo) e é ignorado.
     if (busy && !voice) return;
-    let chat = active;
+    // `opts.chat` é o caminho das tarefas agendadas: elas abrem uma conversa
+    // própria em vez de escrever na que estiver aberta.
+    let chat = opts?.chat ?? active;
     if (!chat) {
       chat = makeChat();
       setChats((cs) => [chat as Chat, ...cs]);
@@ -378,8 +354,9 @@ export default function App() {
               ...c,
               title:
                 c.msgs.length === 0
-                  ? (text || "imagem").slice(0, 44) +
-                    (text.length > 44 ? "…" : "")
+                  ? opts?.title ??
+                    (text || "imagem").slice(0, 44) +
+                      (text.length > 44 ? "…" : "")
                   : c.title,
               msgs: [
                 ...c.msgs,
@@ -405,7 +382,7 @@ export default function App() {
         model,
         effort: effort || null,
         userName: name || null,
-        systemExtra: settings.get("chatSystemExtra") || null,
+        systemExtra: systemExtraFor(chat) || null,
         images: imgs.map((i) => ({ mediaType: i.mediaType, data: i.data })),
         resume,
         voice,
@@ -421,6 +398,49 @@ export default function App() {
       if (voice) voiceHooks.current?.onError(String(e));
     }
   }
+
+  /** system extra da conversa: o da Config + as instruções do projeto dela */
+  function systemExtraFor(chat: Chat): string {
+    const base = settings.get("chatSystemExtra").trim();
+    const proj = chat.projectId
+      ? (projectsStore
+          .load()
+          .find((p) => p.id === chat.projectId)?.instructions ?? "")
+          .trim()
+      : "";
+    return [base, proj].filter(Boolean).join("\n\n");
+  }
+
+  /** roda uma tarefa agendada: abre uma conversa nova com o nome dela */
+  function runTask(t: tasksStore.Task) {
+    const chat = makeChat(null);
+    setChats((cs) => [chat, ...cs]);
+    setActiveId(chat.id);
+    setSection("inicio");
+    void send(t.prompt, { chat, title: t.title });
+    const all = tasksStore.load();
+    tasksStore.save(
+      all.map((x) => (x.id === t.id ? { ...x, lastRun: Date.now() } : x)),
+    );
+  }
+
+  // agendador: com o app aberto, checa a cada meio minuto o que venceu.
+  // Sem daemon de propósito — o Papinho não deixa nada rodando depois de
+  // fechado, e uma tarefa muito atrasada não dispara em cascata (ver isDue).
+  useEffect(() => {
+    const tick = () => {
+      for (const t of tasksStore.load()) {
+        if (tasksStore.isDue(t)) runTask(t);
+      }
+    };
+    const id = window.setInterval(tick, 30_000);
+    const boot = window.setTimeout(tick, 4_000);
+    return () => {
+      window.clearInterval(id);
+      window.clearTimeout(boot);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function setModel(v: string) {
     setDefaultModel(v);
@@ -441,7 +461,12 @@ export default function App() {
   const curEffort = active?.effort ?? defaultEffort;
   const curModelName =
     MODELS.find((m) => m.api === curModel)?.nome ?? "Modelo";
+  const openProject = projectId
+    ? projectsStore.load().find((p) => p.id === projectId) ?? null
+    : null;
   const sorted = [...chats]
+    // com um projeto aberto, a lista lateral mostra só as conversas dele
+    .filter((c) => (projectId ? c.projectId === projectId : true))
     .filter((c) =>
       search.trim()
         ? c.title.toLowerCase().includes(search.trim().toLowerCase())
@@ -474,6 +499,7 @@ export default function App() {
         <span className="text-[12px] font-medium tracking-tight text-ink">
           Papinho
         </span>
+        <span className="text-[12px] text-ink-dim">· {APP_VERSION}</span>
       </div>
 
     <div className="fade-up relative z-10 flex min-h-0 flex-1 overflow-hidden">
@@ -580,9 +606,28 @@ export default function App() {
               ))}
             </nav>
 
+            {/* projeto aberto: a lista abaixo é só dele */}
+            {openProject && (
+              <div className="mx-3 mt-3 flex items-center gap-1.5 rounded-lg bg-surface px-2.5 py-1.5">
+                <Ico n="folder" className="h-3.5 w-3.5 shrink-0 text-ink-dim" />
+                <span className="min-w-0 flex-1 truncate text-[12px] text-ink">
+                  {openProject.name}
+                </span>
+                <button
+                  onClick={() => setProjectId(null)}
+                  title="ver todas as conversas"
+                  className="shrink-0 text-[11px] text-ink-dim hover:text-ink"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
             {/* Conversas e tarefas */}
             <div className="mt-4 flex items-center gap-2 px-4 pb-1">
-              <span className="text-[12px] text-ink-dim">Conversas e tarefas</span>
+              <span className="text-[12px] text-ink-dim">
+                {openProject ? "Conversas do projeto" : "Conversas e tarefas"}
+              </span>
               <div className="relative ml-auto">
                 <button
                   onClick={() =>
@@ -694,17 +739,28 @@ export default function App() {
 
         {section === "skills" ? (
           <ChatSkills />
-        ) : section !== "inicio" ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-            <span className="text-[15px] font-semibold text-ink">
-              {NAV.find((n) => n.id === section)?.label}
-            </span>
-            {(
-              <p className="max-w-sm text-[13px] text-ink-dim">
-                Em breve.
-              </p>
-            )}
-          </div>
+        ) : section === "programado" ? (
+          <Scheduled onRun={runTask} />
+        ) : section === "projetos" ? (
+          <Projects
+            chatCount={chats.reduce<Record<string, number>>((acc, c) => {
+              if (c.projectId) acc[c.projectId] = (acc[c.projectId] ?? 0) + 1;
+              return acc;
+            }, {})}
+            onOpen={(p) => {
+              setProjectId(p.id);
+              setActiveId(null);
+              setSection("inicio");
+            }}
+            onNewChat={(p) => {
+              const c = makeChat(p.id);
+              setChats((cs) => [c, ...cs]);
+              setActiveId(c.id);
+              setProjectId(p.id);
+              setSection("inicio");
+              focusInput();
+            }}
+          />
         ) : showThread ? (
           <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
             <div className="mx-auto flex max-w-[44rem] flex-col gap-10 px-6 py-10">
@@ -778,7 +834,7 @@ export default function App() {
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 pb-4 text-center">
             <span
               aria-hidden
-              className="logo-wobble-lg mb-8 h-16 w-16 shrink-0"
+              className="logo-wobble-xl mb-8 h-32 w-32 shrink-0"
               style={{ backgroundImage: `url(${logoSheet})` }}
             />
             <span className="chat-serif text-[38px] leading-tight tracking-[-0.02em] text-ink">
@@ -1646,4 +1702,3 @@ function SkillsPanel() {
 }
 
 /* ---------- barra lateral minimalista ---------- */
-

@@ -1,5 +1,5 @@
-//! Fala (text-to-speech) usando o `say` do macOS — as mesmas vozes do
-//! sistema (Luciana, Flo, Reed… em pt-BR), sem dependência nova.
+//! Voz neural local via Kokoro, ou vozes do macOS via `say`.
+//! As vozes neurais aparecem quando o runtime e o modelo estão instalados.
 //!
 //! Por que `say` e não `AVSpeechSynthesizer`: mesma qualidade de voz (é o
 //! mesmo motor), matar o processo interrompe a fala na hora (barge-in), e
@@ -11,6 +11,7 @@
 //! Eventos: `tts://done` `{ id }` quando aquela fala acaba (ou é cortada).
 
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use tauri::{AppHandle, Emitter};
@@ -19,6 +20,7 @@ use super::error::{EngineError, Result};
 
 /// Processo do `say` em curso. Um por vez — falar de novo corta o anterior.
 static SPEAKING: Mutex<Option<Child>> = Mutex::new(None);
+static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 fn kill_current() {
     if let Ok(mut guard) = SPEAKING.lock() {
@@ -38,7 +40,75 @@ pub fn speak(
     voice: Option<String>,
     rate: Option<u32>,
 ) -> Result<()> {
+    let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     kill_current();
+
+    if let Some(neural_voice) = voice.as_deref().and_then(super::neural::voice_id) {
+        std::thread::spawn(move || {
+            let path =
+                match super::neural::render(&text, neural_voice, rate.unwrap_or(175), generation) {
+                    Ok(path) => path,
+                    Err(message) => {
+                        super::diag::log("tts", format!("Kokoro falhou: {message}"));
+                        if GENERATION.load(Ordering::SeqCst) == generation {
+                            let _ = app.emit(
+                                "tts://error",
+                                serde_json::json!({ "id": id, "message": message }),
+                            );
+                        }
+                        return;
+                    }
+                };
+            // A pessoa pode interromper durante a síntese. Nunca toca áudio obsoleto.
+            let played = (|| -> std::result::Result<bool, String> {
+                let mut slot = SPEAKING.lock().map_err(|e| e.to_string())?;
+                if GENERATION.load(Ordering::SeqCst) != generation {
+                    return Ok(false);
+                }
+                let child = Command::new("/usr/bin/afplay")
+                    .arg(&path)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .map_err(|e| e.to_string())?;
+                let pid = child.id();
+                *slot = Some(child);
+                drop(slot);
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(40));
+                    let mut slot = SPEAKING.lock().map_err(|e| e.to_string())?;
+                    match slot.as_mut() {
+                        Some(child) if child.id() == pid => {
+                            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+                                *slot = None;
+                                if !status.success() {
+                                    return Err("Não foi possível reproduzir a voz local".into());
+                                }
+                                return Ok(true);
+                            }
+                        }
+                        _ => return Ok(false),
+                    }
+                }
+            })();
+            let _ = std::fs::remove_file(path);
+            if GENERATION.load(Ordering::SeqCst) == generation {
+                match played {
+                    Ok(true) => {
+                        let _ = app.emit("tts://done", serde_json::json!({ "id": id }));
+                    }
+                    Err(message) => {
+                        let _ = app.emit(
+                            "tts://error",
+                            serde_json::json!({ "id": id, "message": message }),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        });
+        return Ok(());
+    }
 
     let clean = text.trim();
     if clean.is_empty() {
@@ -113,28 +183,19 @@ pub fn speak(
 
 /// Corta a fala em curso (barge-in).
 pub fn stop() {
+    GENERATION.fetch_add(1, Ordering::SeqCst);
     kill_current();
 }
 
 /// Vozes instaladas no sistema pro idioma pedido (ex.: "pt_BR").
 /// Devolve `[{ name, locale }]`.
 pub fn voices(locale_prefix: &str) -> Vec<serde_json::Value> {
-    let out = match Command::new("say").arg("-v").arg("?").output() {
-        Ok(o) => o,
-        Err(_) => return vec![],
-    };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|line| {
-            // "Luciana             pt_BR    # Olá, meu nome é Luciana."
-            let (left, _) = line.split_once('#')?;
-            let mut parts = left.split_whitespace().collect::<Vec<_>>();
-            let locale = parts.pop()?.to_string();
-            let name = parts.join(" ");
-            if name.is_empty() || !locale.starts_with(locale_prefix) {
-                return None;
-            }
-            Some(serde_json::json!({ "name": name, "locale": locale }))
-        })
-        .collect()
+    let mut available = Vec::new();
+    if "pt_BR".starts_with(locale_prefix) && super::neural::available() {
+        for name in ["Alex · IA local", "Dora · IA local", "Santa · IA local"] {
+            available.push(serde_json::json!({ "name": name, "locale": "pt_BR" }));
+        }
+    }
+    let _ = locale_prefix;
+    available
 }

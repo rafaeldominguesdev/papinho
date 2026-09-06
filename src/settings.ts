@@ -18,6 +18,7 @@ export type Settings = {
   voiceName: string;
   /** velocidade da fala em palavras por minuto (o padrão do `say` é ~175) */
   voiceRate: number;
+  voiceNeuralConfigured: boolean;
   /** de fone: deixa o microfone aberto enquanto ele fala (dá pra interromper) */
   voiceEarphones: boolean;
 };
@@ -28,7 +29,8 @@ export const DEFAULTS: Settings = {
   chatEffort: "",
   chatSystemExtra: "",
   voiceName: "",
-  voiceRate: 190,
+  voiceRate: 175,
+  voiceNeuralConfigured: false,
   voiceEarphones: false,
 };
 

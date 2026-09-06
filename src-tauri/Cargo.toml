@@ -1,6 +1,6 @@
 [package]
 name = "papinho"
-version = "0.1.0"
+version = "1.0.0"
 description = "Papinho - chat com todos os seus agentes de IA juntos"
 authors = ["Rafael Domingues"]
 edition = "2021"
