@@ -1,66 +1,51 @@
 # Papinho
 
-Chat com **todos os seus agentes de IA juntos**, num app de desktop.
+Chat de desktop com **todos os seus agentes de IA juntos** — Claude, Codex, Grok e outros, na mesma janela.
 
-Roda por cima do `claude` que você já tem instalado e logado — sem chave de
-API nova, sem conta separada. Escolhe modelo e nível de raciocínio por
-mensagem, manda imagem, guarda o histórico e instala skills.
+Usa o login que você já tem em cada CLI (`claude`, `codex`...). Sem conta nova, sem chave de API própria do app.
 
-Irmão do [DevTerm](https://github.com/rafaeldominguesdev/devcrew) (o modo
-CODE, com terminais e equipe de agentes). O Papinho é a parte de conversa,
-separada num app próprio.
+<p>
+  <a href="https://github.com/rafaeldominguesdev/papinho/releases/latest/download/Papinho.dmg">
+    <img alt="Baixar para macOS" src="https://img.shields.io/badge/Baixar-macOS%20(Apple%20Silicon)-black?style=for-the-badge&logo=apple">
+  </a>
+</p>
 
-## Stack
+## O que dá pra fazer
 
-Tauri v2 (Rust) + React 19 + TypeScript + Tailwind v4.
+- Escolher o modelo e o nível de raciocínio por mensagem
+- Mandar imagem no chat
+- Guardar o histórico de conversas
+- Conversar por voz (transcrição + resposta falada, com vozes em português)
+- Instalar skills direto pelo app
 
-## Rodar
+## Instalar
+
+1. Baixe o `.dmg` no botão acima e arraste o Papinho para Aplicativos.
+2. Na primeira abertura, o macOS vai bloquear porque o app é assinado localmente (sem conta Apple Developer paga). Clique com o botão direito no ícone → **Abrir** → confirme. Só precisa fazer isso uma vez.
+3. Abra o Papinho — ele usa o login que a CLI (`claude`, por exemplo) já tem na sua máquina.
+
+## Rodar a partir do código
 
 ```bash
 pnpm install
 pnpm tauri dev
 ```
 
-## Buildar
+Buildar seu próprio `.dmg`:
 
 ```bash
-pnpm tauri build --debug   # .app em src-tauri/target/debug/bundle/macos/
+pnpm tauri build
 ```
+
+## Stack
+
+Tauri v2 (Rust) + React 19 + TypeScript + Tailwind v4.
 
 ## Voz neural local
 
-O modo conversa oferece Alex, Dora e Santa em português brasileiro pelo
-[Kokoro](https://github.com/thewh1teagle/kokoro-onnx), sem API de voz.
-O texto é sintetizado no Mac. A geração da resposta do chat continua usando
-o provedor já configurado.
+O modo conversa oferece vozes em português brasileiro (Alex, Dora, Santa) via [Kokoro](https://github.com/thewh1teagle/kokoro-onnx), sintetizadas no próprio Mac — sem API de voz. O runtime é baixado por usuário na primeira vez que a voz neural é usada; sem ele, o app usa as vozes do sistema.
 
-O runtime é instalado por usuário em
-`~/Library/Application Support/Papinho/voice/`. Essa pasta contém:
-
-- `venv/bin/python`: Python 3.12 com `scripts/voice-requirements.txt` instalado.
-- `kokoro-v1.0.onnx` e `voices-v1.0.bin`: arquivos da release
-  [model-files-v1.1](https://github.com/thewh1teagle/kokoro-onnx/releases/tag/model-files-v1.1).
-
-O worker `scripts/neural_voice.py` é embutido no binário Rust e mantém o
-modelo carregado entre frases. Interromper descarta sínteses pendentes e
-para a reprodução. Os WAVs temporários são removidos após reprodução.
-As vozes do macOS permanecem selecionáveis. Na primeira abertura após
-instalar o modelo, Alex é selecionado com velocidade 1×; escolhas posteriores
-são preservadas. O `.app` não inclui o modelo: em outro Mac, instale também
-o runtime nessa pasta.
-
-Validação local, com os arquivos instalados:
-
-```bash
-"$HOME/Library/Application Support/Papinho/voice/venv/bin/python" scripts/test_neural_voice.py
-cargo test --manifest-path src-tauri/Cargo.toml synthesizes_through_persistent_worker -- --ignored
-```
-
-O primeiro teste gera amostras das três vozes em uma pasta temporária e
-verifica áudio não vazio, taxa de amostragem e ausência de clipping.
-O segundo testa a integração Rust/Python e recuperação após erro.
-
-## Arquivos principais
+## Estrutura do projeto
 
 - `src/App.tsx` — o chat inteiro (sidebar de conversas, compositor, skills)
 - `src/settings.ts` — preferências (nome, modelo e raciocínio padrão)
