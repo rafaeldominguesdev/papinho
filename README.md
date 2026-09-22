@@ -4,11 +4,9 @@ Chat de desktop com **todos os seus agentes de IA juntos** — Claude, Codex, Gr
 
 Usa o login que você já tem em cada CLI (`claude`, `codex`...). Sem conta nova, sem chave de API própria do app.
 
-<p>
-  <a href="https://github.com/rafaeldominguesdev/papinho/releases/latest/download/Papinho.dmg">
-    <img alt="Baixar para macOS" src="https://img.shields.io/badge/Baixar-macOS%20(Apple%20Silicon)-black?style=for-the-badge&logo=apple">
-  </a>
-</p>
+| Arquivo | Sistema | |
+|---|---|---|
+| `Papinho.dmg` | macOS · Apple Silicon (M1 ou mais novo) | [**Baixar**](https://github.com/rafaeldominguesdev/papinho/releases/latest/download/Papinho.dmg) |
 
 ## O que dá pra fazer
 
